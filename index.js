@@ -217,19 +217,28 @@ async function connectDBs() {
         continue;
       }
       try {
-        const existing = await Buyers.findOne({ userId });
-        if (existing) {
+        const res = await Buyers.updateOne(
+          { userId },
+          {
+            $setOnInsert: {
+              userId,
+              score: 0,
+              correctAnswers: [],
+              wrongAnswers: [],
+              finished: false,
+              lastAnswer: { qNumber: null, choiceIdx: null },
+            },
+          },
+          { upsert: true }
+        );
+
+        if (res.upsertedCount && res.upsertedCount > 0) {
+          results.push(`ID ${userId}: ✅ Qo‘shildi`);
+        } else if (res.matchedCount && res.matchedCount > 0) {
           results.push(`ID ${userId}: ⚠️ Allaqachon mavjud`);
-          continue;
+        } else {
+          results.push(`ID ${userId}: ❌ Noma'lum holat`);
         }
-        await Buyers.create({
-          userId,
-          score: 0,
-          correctAnswers: [],
-          wrongAnswers: [],
-          finished: false,
-        });
-        results.push(`ID ${userId}: ✅ Qo‘shildi`);
       } catch (err) {
         console.error("/buy error:", err);
         if (err?.code === 11000 || (err?.message && err.message.includes("duplicate"))) {
@@ -829,18 +838,36 @@ async function connectDBs() {
   });
 
   bot.onText(/\/showbuyers/, async (msg) => {
-    const adminId = msg.chat.id;
-    if (!isAdmin(adminId) && !isMainAdmin(adminId)) return;
+    const adminChatId = msg.chat.id;
+    const fromId = msg.from.id;
+    if (!isAdmin(fromId) && !isMainAdmin(fromId)) return;
     const buyers = await Buyers.find().lean();
-    if (!buyers.length) return bot.sendMessage(msg.chat.id, "🚫 Buyers yo'q");
-    let lines = buyers.map(
-      (b) =>
-        `👤 ${b.username || "—"} | ID: ${b.userId} | Ball: ${
-          b.score || 0
-        } | Daraja: ${b.degree || "—"}`
-    );
-    while (lines.length)
-      await bot.sendMessage(msg.chat.id, lines.splice(0, 20).join("\n"));
+    if (!buyers.length) return bot.sendMessage(adminChatId, "🚫 Buyers yo'q");
+
+    const rows = [];
+    for (const b of buyers) {
+      let name = "—";
+      try {
+        const chat = await bot.getChat(b.userId);
+        name = chat.first_name || chat.username || "—";
+      } catch (e) {
+        // fallback: try to fetch from channel membership
+        try {
+          const member = await bot.getChatMember(CHANNEL, b.userId);
+          const u = member?.user;
+          if (u) {
+            name = u.first_name || u.username || name;
+          }
+        } catch (_) {}
+      }
+      const degree = b.degree || "—";
+      rows.push(`👤 ${name} | ID: ${b.userId} | Ball: ${b.score || 0} | Daraja: ${degree}`);
+    }
+
+    while (rows.length) {
+      await bot.sendMessage(adminChatId, rows.splice(0, 20).join("\n"));
+      await sleep(100);
+    }
   });
 
   // === sendtoall (text + media/forward) ===

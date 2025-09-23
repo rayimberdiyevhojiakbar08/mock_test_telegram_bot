@@ -194,42 +194,54 @@ async function connectDBs() {
       },
     });
 
-  bot.onText(/\/buy\s+(\d+)/, async (msg, match) => {
-    const adminId = msg.chat.id;
-    if (!isAdmin(adminId) && !isMainAdmin(adminId)) {
-      return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
+  bot.onText(/\/buy(?:\s+(.+))?/, async (msg, match) => {
+    const adminUserId = msg.from.id;
+    const replyChatId = msg.chat.id;
+    if (!isAdmin(adminUserId) && !isMainAdmin(adminUserId)) {
+      return bot.sendMessage(replyChatId, "❌ Bu buyruq faqat adminlar uchun!");
     }
-    const userId = Number(match && match[1]);
-    if (!userId)
-      return bot.sendMessage(
-        adminId,
-        "❌ Noto'g'ri ID. /buy <id> formatida yuboring."
-      );
 
-    try {
-      // Har bir userId uchun alohida hujjat qo'shish
-      const existing = await Buyers.findOne({ userId });
-      if (existing) {
-        return bot.sendMessage(adminId, `⚠️ ID ${userId} allaqachon mavjud.`);
-      }
-      await Buyers.create({
-        userId,
-        score: 0,
-        correctAnswers: [],
-        wrongAnswers: [],
-        finished: false,
-      });
-      return bot.sendMessage(adminId, `✅ Buyer qo‘shildi: ${userId}`);
-    } catch (err) {
-      console.error("/buy error:", err);
-      if (err.code === 11000 || (err.message && err.message.includes('duplicate'))) {
-        return bot.sendMessage(
-          adminId,
-          `❌ Bu ID (${userId}) allaqachon mavjud. Yangi ID kiriting.`
-        );
-      }
-      return bot.sendMessage(adminId, "❌ Xatolik yuz berdi.");
+    const text = msg.text || "";
+    const ids = (text.match(/\d+/g) || []).map(Number);
+    if (!ids.length) {
+      return bot.sendMessage(
+        replyChatId,
+        "❌ Noto'g'ri ID. /buy <id> yoki bir nechta ID yuboring."
+      );
     }
+
+    const results = [];
+    for (const userId of ids) {
+      if (!Number.isFinite(userId)) {
+        results.push(`ID ${userId}: ❌ Noto'g'ri ID`);
+        continue;
+      }
+      try {
+        const existing = await Buyers.findOne({ userId });
+        if (existing) {
+          results.push(`ID ${userId}: ⚠️ Allaqachon mavjud`);
+          continue;
+        }
+        await Buyers.create({
+          userId,
+          score: 0,
+          correctAnswers: [],
+          wrongAnswers: [],
+          finished: false,
+        });
+        results.push(`ID ${userId}: ✅ Qo‘shildi`);
+      } catch (err) {
+        console.error("/buy error:", err);
+        if (err?.code === 11000 || (err?.message && err.message.includes("duplicate"))) {
+          results.push(`ID ${userId}: ⚠️ Allaqachon mavjud`);
+        } else {
+          results.push(`ID ${userId}: ❌ Xatolik`);
+        }
+      }
+    }
+
+    const response = results.join("\n");
+    return bot.sendMessage(replyChatId, response);
   });
 
   // ====== /kim <id> (admin) ======

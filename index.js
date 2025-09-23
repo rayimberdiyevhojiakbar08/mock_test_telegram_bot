@@ -76,7 +76,6 @@ async function connectDBs() {
       choiceIdx: { type: Number, default: null },
     },
   });
-  BuyersSchema.index({ userId: 1 }, { unique: true });
   const testsSchema = new mongoose.Schema({
     number: { type: Number, unique: true },
     question: { type: String, default: "" },

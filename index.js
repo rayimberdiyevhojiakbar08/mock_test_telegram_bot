@@ -194,28 +194,42 @@ async function connectDBs() {
       },
     });
 
-bot.onText(/\/buy\s+(\d+)/, async (msg, match) => {
-  const adminId = msg.chat.id;
-  if (!isAdmin(adminId) && !isMainAdmin(adminId)) {
-    return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
-  }
-  const userId = Number(match && match[1]);
-  if (!userId) return bot.sendMessage(adminId, "❌ Noto'g'ri ID. /buy <id> formatida yuboring.");
-
-  try {
-    const existing = await Buyers.findOne({ userId });
-    if (existing) return bot.sendMessage(adminId, `⚠️ ID ${userId} allaqachon mavjud.`);
-
-    await Buyers.create({ userId, score: 0, correctAnswers: [], wrongAnswers: [], finished: false });
-    return bot.sendMessage(adminId, `✅ Buyer qo‘shildi: ${userId}`);
-  } catch (err) {
-    console.error('/buy error:', err);
-    if (err.code === 11000) {
-      return bot.sendMessage(adminId, '❌ Duplicate error — iltimos DB dagi indekslarni tekshiring.');
+  bot.onText(/\/buy\s+(\d+)/, async (msg, match) => {
+    const adminId = msg.chat.id;
+    if (!isAdmin(adminId) && !isMainAdmin(adminId)) {
+      return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
     }
-    return bot.sendMessage(adminId, '❌ Xatolik yuz berdi.');
-  }
-});
+    const userId = Number(match && match[1]);
+    if (!userId)
+      return bot.sendMessage(
+        adminId,
+        "❌ Noto'g'ri ID. /buy <id> formatida yuboring."
+      );
+
+    try {
+      const existing = await Buyers.findOne({ userId });
+      if (existing)
+        return bot.sendMessage(adminId, `⚠️ ID ${userId} allaqachon mavjud.`);
+
+      await Buyers.create({
+        userId,
+        score: 0,
+        correctAnswers: [],
+        wrongAnswers: [],
+        finished: false,
+      });
+      return bot.sendMessage(adminId, `✅ Buyer qo‘shildi: ${userId}`);
+    } catch (err) {
+      console.error("/buy error:", err);
+      if (err.code === 11000) {
+        return bot.sendMessage(
+          adminId,
+          "❌ Duplicate error — iltimos DB dagi indekslarni tekshiring."
+        );
+      }
+      return bot.sendMessage(adminId, "❌ Xatolik yuz berdi.");
+    }
+  });
 
   // ====== /kim <id> (admin) ======
   bot.onText(/\/kim (\d+)/, async (msg, match) => {
@@ -408,43 +422,43 @@ bot.onText(/\/buy\s+(\d+)/, async (msg, match) => {
   });
 
   // === /showtests komandasi ===
-bot.onText(/\/showtests/, async (msg) => {
-  const adminId = msg.chat.id;
-  if (!isAdmin(adminId) && !isMainAdmin(adminId)) {
-    return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
-  }
-
-  try {
-    const tests = await Tests.find().sort({ number: 1 }).lean();
-
-    if (!tests.length) {
-      return bot.sendMessage(adminId, "⚠️ Hozircha testlar mavjud emas.");
+  bot.onText(/\/showtests/, async (msg) => {
+    const adminId = msg.chat.id;
+    if (!isAdmin(adminId) && !isMainAdmin(adminId)) {
+      return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
     }
 
-    for (const t of tests) {
-      let message = `#️⃣ Test №${t.number}\n\n❓ Savol: ${t.question}\n\n`;
+    try {
+      const tests = await Tests.find().sort({ number: 1 }).lean();
 
-      // Variantlarni chiqaramiz
-      t.options.forEach((opt, idx) => {
-        const letter = String.fromCharCode(65 + idx); // 65 = 'A'
-        message += `${letter}) ${opt}\n`;
-      });
-
-      message += `\n✅ To‘g‘ri javob: ${t.answer}\n`;
-      message += `🏆 Ball: ${t.score}`;
-
-      if (t.image) {
-        await bot.sendPhoto(adminId, t.image, { caption: message });
-      } else {
-        await bot.sendMessage(adminId, message);
+      if (!tests.length) {
+        return bot.sendMessage(adminId, "⚠️ Hozircha testlar mavjud emas.");
       }
+
+      for (const t of tests) {
+        let message = `#️⃣ Test №${t.number}\n\n❓ Savol: ${t.question}\n\n`;
+
+        // Variantlarni chiqaramiz
+        t.options.forEach((opt, idx) => {
+          const letter = String.fromCharCode(65 + idx); // 65 = 'A'
+          message += `${letter}) ${opt}\n`;
+        });
+
+        message += `\n✅ To‘g‘ri javob: ${t.answer}\n`;
+        message += `🏆 Ball: ${t.score}`;
+
+        if (t.image) {
+          await bot.sendPhoto(adminId, t.image, { caption: message });
+        } else {
+          await bot.sendMessage(adminId, message);
+        }
+      }
+    } catch (err) {
+      console.error("/showtests error:", err);
+      bot.sendMessage(adminId, "❌ Testlarni olishda xatolik yuz berdi.");
     }
-  } catch (err) {
-    console.error("/showtests error:", err);
-    bot.sendMessage(adminId, "❌ Testlarni olishda xatolik yuz berdi.");
-  }
-});
-  
+  });
+
   // ====== /testniboshlash (admin) ======
   async function sendAllTestsToBuyers(adminId) {
     const buyers = await Buyers.find({}).lean();
@@ -816,22 +830,43 @@ bot.onText(/\/showtests/, async (msg) => {
       await bot.sendMessage(msg.chat.id, lines.splice(0, 20).join("\n"));
   });
 
-  bot.onText(/\/sendtoall (.+)/, async (msg, match) => {
-  if (!isAdmin(msg.chat.id)) return;
-  await sendToAll(uid => bot.sendMessage(uid, match[1]));
-  bot.sendMessage(msg.chat.id, "📢 Xabar yuborildi!");
-});
-
-// 2) media/forward yuborish
-bot.on("message", async (msg) => {
-  if (!isAdmin(msg.chat.id)) return;
-  if (msg.text && msg.text.startsWith("/")) return; // komandalarni tashlab ket
-
-  if (msg.photo || msg.video || msg.document || msg.audio || msg.voice || msg.caption || msg.text) {
-    await sendToAll(uid => bot.copyMessage(uid, msg.chat.id, msg.message_id));
-    bot.sendMessage(msg.chat.id, "✅ Xabar yuborildi!");
+  // === sendtoall (text + media/forward) ===
+  async function sendToAll(contentFn) {
+    const usersDoc = await Users.findOne();
+    if (!usersDoc || !usersDoc.ids.length) return;
+    for (const uid of usersDoc.ids) {
+      try {
+        await contentFn(uid);
+      } catch {}
+    }
   }
-});
+
+  bot.onText(/\/sendtoall (.+)/, async (msg, match) => {
+    if (!isAdmin(msg.chat.id)) return;
+    await sendToAll((uid) => bot.sendMessage(uid, match[1]));
+    bot.sendMessage(msg.chat.id, "📢 Xabar yuborildi!");
+  });
+
+  // 2) media/forward yuborish
+  bot.on("message", async (msg) => {
+    if (!isAdmin(msg.chat.id)) return;
+    if (msg.text && msg.text.startsWith("/")) return; // komandalarni tashlab ket
+
+    if (
+      msg.photo ||
+      msg.video ||
+      msg.document ||
+      msg.audio ||
+      msg.voice ||
+      msg.caption ||
+      msg.text
+    ) {
+      await sendToAll((uid) =>
+        bot.copyMessage(uid, msg.chat.id, msg.message_id)
+      );
+      bot.sendMessage(msg.chat.id, "✅ Xabar yuborildi!");
+    }
+  });
 
   // ====== graceful shutdown ======
   process.on("SIGINT", async () => {

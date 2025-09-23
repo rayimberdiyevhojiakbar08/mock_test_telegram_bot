@@ -71,6 +71,7 @@ async function connectDBs() {
     wrongAnswers: { type: [Number], default: [] },
     score: { type: Number, default: 0 },
     finished: { type: Boolean, default: false },
+    degree: { type: String, default: "—" },
     lastAnswer: {
       qNumber: { type: Number, default: null },
       choiceIdx: { type: Number, default: null },
@@ -88,6 +89,19 @@ async function connectDBs() {
   const Users = mongoose.model("Users", usersSchema); // default conn
   const Buyers = buyerConn.model("Buyer", BuyersSchema);
   const Tests = testConn.model("Test", testsSchema);
+
+  // Ensure correct indexes on Buyers and clean up legacy ones
+  try {
+    // Drop legacy incorrect index if exists (id_1)
+    await Buyers.collection.dropIndex("id_1");
+  } catch (e) {
+    // ignore if index doesn't exist
+  }
+  try {
+    await Buyers.createIndexes();
+  } catch (e) {
+    console.warn("Buyers.createIndexes warning:", e?.message || e);
+  }
 
   function parseCorrectIndex(test) {
     if (!test) return NaN;
@@ -226,6 +240,7 @@ async function connectDBs() {
               correctAnswers: [],
               wrongAnswers: [],
               finished: false,
+              degree: "—",
               lastAnswer: { qNumber: null, choiceIdx: null },
             },
           },
@@ -765,6 +780,7 @@ async function connectDBs() {
     for (const b of updatedBuyers) {
       const percent = (b.score / totalPossible) * 100;
       const degree = getDegree(percent);
+      await Buyers.updateOne({ userId: b.userId }, { $set: { degree } });
       try {
         const chat = await bot.getChat(b.userId);
         const name = chat.first_name || chat.username || "—";
@@ -806,7 +822,7 @@ async function connectDBs() {
       } catch (e) {}
       const percent = Math.round((b.score / totalPossible) * 1000) / 10;
       lines.push(
-        `ID:${b.userId} | ${name} | Ball:${b.score} | Foiz:${percent}%`
+        `${name} |🆔${b.userId}|🎯${b.score} |📈${percent}%|🎓${b.degree}`
       );
     }
 
@@ -861,7 +877,7 @@ async function connectDBs() {
         } catch (_) {}
       }
       const degree = b.degree || "—";
-      rows.push(`👤 ${name} | ID: ${b.userId} | Ball: ${b.score || 0} | Daraja: ${degree}`);
+      rows.push(`👤 ${name} |🆔 ${b.userId} |🎯 ${b.score || 0} |🎓 ${degree}`);
     }
 
     while (rows.length) {

@@ -207,10 +207,11 @@ async function connectDBs() {
       );
 
     try {
+      // Har bir userId uchun alohida hujjat qo'shish
       const existing = await Buyers.findOne({ userId });
-      if (existing)
+      if (existing) {
         return bot.sendMessage(adminId, `⚠️ ID ${userId} allaqachon mavjud.`);
-
+      }
       await Buyers.create({
         userId,
         score: 0,
@@ -221,10 +222,10 @@ async function connectDBs() {
       return bot.sendMessage(adminId, `✅ Buyer qo‘shildi: ${userId}`);
     } catch (err) {
       console.error("/buy error:", err);
-      if (err.code === 11000) {
+      if (err.code === 11000 || (err.message && err.message.includes('duplicate'))) {
         return bot.sendMessage(
           adminId,
-          "❌ Duplicate error — iltimos DB dagi indekslarni tekshiring."
+          `❌ Bu ID (${userId}) allaqachon mavjud. Yangi ID kiriting.`
         );
       }
       return bot.sendMessage(adminId, "❌ Xatolik yuz berdi.");

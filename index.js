@@ -227,7 +227,7 @@ async function connectDBs() {
     const results = [];
     for (const userId of ids) {
       if (!Number.isFinite(userId)) {
-        results.push(`ID ${userId}: ❌ Noto'g'ri ID`);
+        results.push(`🆔 ${userId}: ❌ Noto'g'ri ID`);
         continue;
       }
       try {
@@ -248,18 +248,18 @@ async function connectDBs() {
         );
 
         if (res.upsertedCount && res.upsertedCount > 0) {
-          results.push(`ID ${userId}: ✅ Qo‘shildi`);
+          results.push(`🆔 ${userId}: ✅ Qo‘shildi`);
         } else if (res.matchedCount && res.matchedCount > 0) {
-          results.push(`ID ${userId}: ⚠️ Allaqachon mavjud`);
+          results.push(`🆔 ${userId}: ⚠️ Allaqachon mavjud`);
         } else {
-          results.push(`ID ${userId}: ❌ Noma'lum holat`);
+          results.push(`🆔 ${userId}: ❌ Noma'lum holat`);
         }
       } catch (err) {
         console.error("/buy error:", err);
         if (err?.code === 11000 || (err?.message && err.message.includes("duplicate"))) {
-          results.push(`ID ${userId}: ⚠️ Allaqachon mavjud`);
+          results.push(`🆔 ${userId}: ⚠️ Allaqachon mavjud`);
         } else {
-          results.push(`ID ${userId}: ❌ Xatolik`);
+          results.push(`🆔 ${userId}: ❌ Xatolik`);
         }
       }
     }
@@ -283,7 +283,7 @@ async function connectDBs() {
       if (buyer) {
         return bot.sendMessage(
           adminId,
-          `👤 ${name}\nID: ${userId}\nBall: ${buyer.score}\nTo'g'ri: ${
+          `👤 ${name}\n🆔 ${userId}\n🎯 Ball: ${buyer.score}\nTo'g'ri: ${
             (buyer.correctAnswers || []).length
           }\nXato: ${(buyer.wrongAnswers || []).length}\nTugatgan: ${
             buyer.finished ? "Ha" : "Yo‘q"
@@ -293,7 +293,7 @@ async function connectDBs() {
 
       return bot.sendMessage(
         adminId,
-        `👤 ${name}\nID: ${userId}\nℹ️ Bu user Buyers DBda yo‘q`
+        `👤 ${name}\n🆔 ${userId}\nℹ️ Bu user Buyer emas`
       );
     } catch (e) {
       return bot.sendMessage(adminId, `❌ Foydalanuvchi topilmadi: ${userId}`);
@@ -822,7 +822,7 @@ async function connectDBs() {
       } catch (e) {}
       const percent = Math.round((b.score / totalPossible) * 1000) / 10;
       lines.push(
-        `${name} |🆔${b.userId}|🎯${b.score} |📈${percent}%|🎓${b.degree}`
+        `${name} |🎯${b.score} |📈${percent}%|🎓${b.degree}`
       );
     }
 

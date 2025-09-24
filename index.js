@@ -369,7 +369,7 @@ async function connectDBs() {
 
       await bot.sendMessage(
         adminId,
-        `✅ ${session.tempQuestions.length} ta savol saqlandi (boshlanishi #${baseNumber}).`
+        `✅ Savol saqlandi!`
       );
 
       delete creatingTestSessions[adminId];

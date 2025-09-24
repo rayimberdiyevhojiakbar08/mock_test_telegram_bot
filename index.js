@@ -31,6 +31,7 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const isAdmin = (id) => ADMINS.includes(id) || id === MAIN_ADMIN_ID;
 const isMainAdmin = (id) => Number(id) === MAIN_ADMIN_ID;
+const isRegularAdmin = (id) => ADMINS.includes(id) && Number(id) !== MAIN_ADMIN_ID;
 
 // === DATABASE CONNECTIONS ===
 async function connectDBs() {
@@ -211,7 +212,7 @@ async function connectDBs() {
   bot.onText(/\/buy(?:\s+(.+))?/, async (msg, match) => {
     const adminUserId = msg.from.id;
     const replyChatId = msg.chat.id;
-    if (!isAdmin(adminUserId) && !isMainAdmin(adminUserId)) {
+    if (!isAdmin(adminUserId)) {
       return bot.sendMessage(replyChatId, "❌ Bu buyruq faqat adminlar uchun!");
     }
 
@@ -271,7 +272,7 @@ async function connectDBs() {
   // ====== /kim <id> (admin) ======
   bot.onText(/\/kim (\d+)/, async (msg, match) => {
     const adminId = msg.chat.id;
-    if (!isAdmin(adminId) && !isMainAdmin(adminId))
+    if (!isAdmin(adminId))
       return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
 
     const userId = Number(match[1]);
@@ -303,7 +304,7 @@ async function connectDBs() {
   // === ADMIN TEST CREATION ===
   const creatingTestSessions = {}; // adminId => session
 
-  bot.onText(/\/testyaratish(?: (\d+))?/, async (msg, match) => {
+  bot.onText(/^\/testyaratish(?: (\d+))?$/, async (msg, match) => {
     if (!isMainAdmin(msg.chat.id)) return;
 
     const adminId = msg.chat.id;
@@ -332,8 +333,8 @@ async function connectDBs() {
 
     const step = session.step;
 
-    // /testyaratish_tugat
-    if (msg.text && msg.text.trim() === "/testyaratishni_tugat") {
+    // /testyaratishni_tugat (also accept /testyaratishni_tugatish)
+    if (msg.text && /^\/testyaratishni_tugat(ish)?$/.test(msg.text.trim())) {
       if (!session.tempQuestions.length) {
         await bot.sendMessage(adminId, "⚠️ Hech qanday savol qo‘shilmadi.");
         delete creatingTestSessions[adminId];
@@ -461,7 +462,7 @@ async function connectDBs() {
   // === /showtests komandasi ===
   bot.onText(/\/showtests/, async (msg) => {
     const adminId = msg.chat.id;
-    if (!isAdmin(adminId) && !isMainAdmin(adminId)) {
+    if (!isAdmin(adminId)) {
       return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
     }
 
@@ -564,7 +565,7 @@ async function connectDBs() {
 
   bot.onText(/\/testniboshlash/, async (msg) => {
     const adminId = msg.chat.id;
-    if (!isAdmin(adminId) && !isMainAdmin(adminId))
+    if (!isAdmin(adminId))
       return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
     await sendAllTestsToBuyers(adminId);
   });
@@ -723,7 +724,7 @@ async function connectDBs() {
   // ====== /testni_tugatish (admin — server-side final processing & bonuses & degrees) ======
   bot.onText(/\/testni_tugatish/, async (msg) => {
     const adminId = msg.chat.id;
-    if (!isAdmin(adminId) && !isMainAdmin(adminId))
+    if (!isAdmin(adminId))
       return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
 
     const buyers = await Buyers.find({}).lean();
@@ -806,7 +807,7 @@ async function connectDBs() {
   // ====== show / delete commands (admin/main admin) ======
   bot.onText(/\/showallresults/, async (msg) => {
     const adminId = msg.chat.id;
-    if (!isAdmin(adminId) && !isMainAdmin(adminId)) return;
+    if (!isAdmin(adminId)) return;
     const buyers = await Buyers.find().lean();
     if (!buyers.length) return bot.sendMessage(adminId, "🚫 Buyers yo‘q");
 
@@ -832,7 +833,7 @@ async function connectDBs() {
 
   bot.onText(/\/deletebuyers/, async (msg) => {
     const adminId = msg.chat.id;
-    if (!isAdmin(adminId) && !isMainAdmin(adminId))
+    if (!isAdmin(adminId))
       return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun");
     await Buyers.deleteMany({});
     return bot.sendMessage(adminId, "🗑️ Barcha buyers o‘chirildi");
@@ -840,7 +841,7 @@ async function connectDBs() {
 
   bot.onText(/\/deletetests/, async (msg) => {
     const adminId = msg.chat.id;
-    if (!isAdmin(adminId) && !isMainAdmin(adminId))
+    if (!isAdmin(adminId))
       return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun");
     await Tests.deleteMany({});
     return bot.sendMessage(adminId, "🗑️ Barcha testlar o‘chirildi");
@@ -848,7 +849,7 @@ async function connectDBs() {
   // === show users/buyers/testing utilities ===
   bot.onText(/\/showusers/, async (msg) => {
     const adminId = msg.chat.id;
-    if (!isAdmin(adminId) && !isMainAdmin(adminId)) return;
+    if (!isAdmin(adminId)) return;
     const doc = await Users.findOne();
     bot.sendMessage(msg.chat.id, `👥 Users soni: ${doc?.ids?.length || 0}`);
   });
@@ -856,7 +857,7 @@ async function connectDBs() {
   bot.onText(/\/showbuyers/, async (msg) => {
     const adminChatId = msg.chat.id;
     const fromId = msg.from.id;
-    if (!isAdmin(fromId) && !isMainAdmin(fromId)) return;
+    if (!isAdmin(fromId)) return;
     const buyers = await Buyers.find().lean();
     if (!buyers.length) return bot.sendMessage(adminChatId, "🚫 Buyers yo'q");
 
@@ -898,14 +899,14 @@ async function connectDBs() {
   }
 
   bot.onText(/\/sendtoall (.+)/, async (msg, match) => {
-    if (!isAdmin(msg.chat.id)) return;
+    if (!isRegularAdmin(msg.chat.id)) return;
     await sendToAll((uid) => bot.sendMessage(uid, match[1]));
     bot.sendMessage(msg.chat.id, "📢 Xabar yuborildi!");
   });
 
   // 2) media/forward yuborish
   bot.on("message", async (msg) => {
-    if (!isAdmin(msg.chat.id)) return;
+    if (!isRegularAdmin(msg.chat.id)) return;
     if (msg.text && msg.text.startsWith("/")) return; // komandalarni tashlab ket
 
     if (

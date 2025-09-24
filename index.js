@@ -790,7 +790,7 @@ async function connectDBs() {
             b.score
           }/${totalPossible}\n📈 Foiz: ${percent.toFixed(
             2
-          )}%\n🎓 Degree: ${degree}`
+          )}%\n🎓 Daraja: ${degree}`
         );
       } catch (e) {
         console.log("push failed to", b.userId, e?.message || e);

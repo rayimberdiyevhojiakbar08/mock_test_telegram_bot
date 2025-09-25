@@ -66,6 +66,96 @@ async function connectDBs() {
     ids: { type: [Number], default: [] },
   });
 
+  // Global test progress flag to prevent duplicate starts
+  let testsInProgress = false;
+
+  // Shared: show users count
+  async function handleShowUsers(adminId) {
+    const doc = await Users.findOne();
+    return bot.sendMessage(adminId, `👥 Userlar soni: ${doc?.ids?.length || 0}`);
+  }
+
+  // /userlarsoni command (single handler)
+  bot.onText(/\/userlarsoni$/, async (msg) => {
+    const adminId = msg.chat.id;
+    if (!isAdmin(adminId)) return;
+    await handleShowUsers(adminId);
+  });
+
+  // Shared: show buyers list
+  async function handleShowBuyers(adminChatId) {
+    const buyers = await Buyers.find().lean();
+    if (!buyers.length) return bot.sendMessage(adminChatId, "🚫 Buyers yo'q");
+
+    const rows = [];
+    for (const b of buyers) {
+      let name = "—";
+      try {
+        const chat = await bot.getChat(b.userId);
+        name = chat.first_name || chat.username || "—";
+      } catch (e) {
+        try {
+          const member = await bot.getChatMember(CHANNEL, b.userId);
+          const u = member?.user;
+          if (u) {
+            name = u.first_name || u.username || name;
+          }
+        } catch (_) {}
+      }
+      const degree = b.degree || "—";
+      rows.push(`👤 ${name} |🆔 ${b.userId} |🎯 ${b.score || 0} |🎓 ${degree}`);
+    }
+
+    while (rows.length) {
+      await bot.sendMessage(adminChatId, rows.splice(0, 20).join("\n"));
+      await sleep(100);
+    }
+  }
+
+  // /ishtirokchilar command (renamed from /showbuyers)
+  bot.onText(/\/ishtirokchilar/, async (msg) => {
+    const adminChatId = msg.chat.id;
+    const fromId = msg.from.id;
+    if (!isAdmin(fromId)) return;
+    await handleShowBuyers(adminChatId);
+  });
+
+  // Removed text-button mirror (use /ishtirokchilar)
+
+  // Shared: show all results
+  async function handleShowAllResults(adminId) {
+    const buyers = await Buyers.find().lean();
+    if (!buyers.length) return bot.sendMessage(adminId, "🚫 Buyers yo‘q");
+
+    let lines = [];
+    const allTests = await Tests.find().lean();
+    const totalPossible = allTests.reduce((s, t) => s + (t.score || 1), 0) || 1;
+
+    for (const b of buyers) {
+      let name = "?";
+      try {
+        const c = await bot.getChat(b.userId);
+        name = c.first_name || c.username || "?";
+      } catch (e) {}
+      const percent = Math.round((b.score / totalPossible) * 1000) / 10;
+      lines.push(
+        `${name} |🎯${b.score} |📈${percent}%|🎓${b.degree}`
+      );
+    }
+
+    while (lines.length)
+      await bot.sendMessage(adminId, lines.splice(0, 20).join("\n"));
+  }
+
+  // /natijalar command (renamed from /showallresults)
+  bot.onText(/\/natijalar/, async (msg) => {
+    const adminId = msg.chat.id;
+    if (!isAdmin(adminId)) return;
+    await handleShowAllResults(adminId);
+  });
+
+  // Removed text-button mirror (use /natijalar)
+
   const BuyersSchema = new mongoose.Schema({
     userId: { type: Number, required: true, unique: true },
     correctAnswers: { type: [Number], default: [] },
@@ -115,6 +205,23 @@ async function connectDBs() {
   }
 
   // === START ===
+  // Helper: show Admin control panel keyboard
+  function sendAdminPanel(chatId) {
+    return bot.sendMessage(chatId, "🔧 Admin boshqaruvi:", {
+      reply_markup: {
+        keyboard: [
+          [{ text: "/testlarniko'rish" }, { text: "/userlarsoni" }],
+          [{ text: "/ishtirokchilar" }, { text: "/natijalar" }],
+          [{ text: "/testlarnio'chirish" }, { text: "/ishtirokchilarnio'chirish" }],
+          [{ text: "/testyaratish" }, { text: "/testniboshlash" }],
+          [{ text: "/testni_tugatish" }],
+        ],
+        resize_keyboard: true,
+        one_time_keyboard: false,
+      },
+    });
+  }
+
   bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     let doc = await Users.findOne();
@@ -127,7 +234,7 @@ async function connectDBs() {
     try {
       const member = await bot.getChatMember(CHANNEL, chatId);
       if (["member", "administrator", "creator"].includes(member.status)) {
-        return bot.sendMessage(
+        await bot.sendMessage(
           chatId,
           `Assalomu alaykum, ${msg.chat.first_name || "foydalanuvchi"}!`,
           {
@@ -144,12 +251,23 @@ async function connectDBs() {
             },
           }
         );
+        if (isAdmin(chatId)) {
+          await sendAdminPanel(chatId);
+        }
+        return;
       }
     } catch (err) {
       // silently ignore (user not a member or other error)
     }
 
     await sendSubscribeMessage(chatId);
+  });
+
+  // Command: /admin — show Admin panel on demand
+  bot.onText(/^\/admin$/, async (msg) => {
+    const chatId = msg.chat.id;
+    if (!isAdmin(chatId)) return;
+    await sendAdminPanel(chatId);
   });
 
   // CALLBACKS
@@ -367,9 +485,10 @@ async function connectDBs() {
         );
       }
 
+      const totalTests = await Tests.countDocuments();
       await bot.sendMessage(
         adminId,
-        `✅ Savol saqlandi!`
+        `✅ Savol saqlandi!\n${totalTests} ta test bor.`
       );
 
       delete creatingTestSessions[adminId];
@@ -459,13 +578,8 @@ async function connectDBs() {
     }
   });
 
-  // === /showtests komandasi ===
-  bot.onText(/\/showtests/, async (msg) => {
-    const adminId = msg.chat.id;
-    if (!isAdmin(adminId)) {
-      return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
-    }
-
+  // Shared: show tests to admin
+  async function handleShowTests(adminId) {
     try {
       const tests = await Tests.find().sort({ number: 1 }).lean();
 
@@ -492,9 +606,18 @@ async function connectDBs() {
         }
       }
     } catch (err) {
-      console.error("/showtests error:", err);
+      console.error("/testlarniko'rish error:", err);
       bot.sendMessage(adminId, "❌ Testlarni olishda xatolik yuz berdi.");
     }
+  }
+
+  // === /testlarniko'rish komandasi (renamed from /showtests) ===
+  bot.onText(/\/testlarniko'rish/, async (msg) => {
+    const adminId = msg.chat.id;
+    if (!isAdmin(adminId)) {
+      return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
+    }
+    await handleShowTests(adminId);
   });
 
   // ====== /testniboshlash (admin) ======
@@ -804,34 +927,8 @@ async function connectDBs() {
     );
   });
 
-  // ====== show / delete commands (admin/main admin) ======
-  bot.onText(/\/showallresults/, async (msg) => {
-    const adminId = msg.chat.id;
-    if (!isAdmin(adminId)) return;
-    const buyers = await Buyers.find().lean();
-    if (!buyers.length) return bot.sendMessage(adminId, "🚫 Buyers yo‘q");
-
-    let lines = [];
-    const allTests = await Tests.find().lean();
-    const totalPossible = allTests.reduce((s, t) => s + (t.score || 1), 0) || 1;
-
-    for (const b of buyers) {
-      let name = "?";
-      try {
-        const c = await bot.getChat(b.userId);
-        name = c.first_name || c.username || "?";
-      } catch (e) {}
-      const percent = Math.round((b.score / totalPossible) * 1000) / 10;
-      lines.push(
-        `${name} |🎯${b.score} |📈${percent}%|🎓${b.degree}`
-      );
-    }
-
-    while (lines.length)
-      await bot.sendMessage(adminId, lines.splice(0, 20).join("\n"));
-  });
-
-  bot.onText(/\/deletebuyers/, async (msg) => {
+  // /ishtirokchilarnio'chirish (renamed from /deletebuyers)
+  bot.onText(/\/ishtirokchilarnio'chirish/, async (msg) => {
     const adminId = msg.chat.id;
     if (!isAdmin(adminId))
       return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun");
@@ -839,7 +936,8 @@ async function connectDBs() {
     return bot.sendMessage(adminId, "🗑️ Barcha buyers o‘chirildi");
   });
 
-  bot.onText(/\/deletetests/, async (msg) => {
+  // /testlarnio'chirish (renamed from /deletetests)
+  bot.onText(/\/testlarnio'chirish/, async (msg) => {
     const adminId = msg.chat.id;
     if (!isAdmin(adminId))
       return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun");
@@ -847,45 +945,6 @@ async function connectDBs() {
     return bot.sendMessage(adminId, "🗑️ Barcha testlar o‘chirildi");
   });
   // === show users/buyers/testing utilities ===
-  bot.onText(/\/showusers/, async (msg) => {
-    const adminId = msg.chat.id;
-    if (!isAdmin(adminId)) return;
-    const doc = await Users.findOne();
-    bot.sendMessage(msg.chat.id, `👥 Users soni: ${doc?.ids?.length || 0}`);
-  });
-
-  bot.onText(/\/showbuyers/, async (msg) => {
-    const adminChatId = msg.chat.id;
-    const fromId = msg.from.id;
-    if (!isAdmin(fromId)) return;
-    const buyers = await Buyers.find().lean();
-    if (!buyers.length) return bot.sendMessage(adminChatId, "🚫 Buyers yo'q");
-
-    const rows = [];
-    for (const b of buyers) {
-      let name = "—";
-      try {
-        const chat = await bot.getChat(b.userId);
-        name = chat.first_name || chat.username || "—";
-      } catch (e) {
-        // fallback: try to fetch from channel membership
-        try {
-          const member = await bot.getChatMember(CHANNEL, b.userId);
-          const u = member?.user;
-          if (u) {
-            name = u.first_name || u.username || name;
-          }
-        } catch (_) {}
-      }
-      const degree = b.degree || "—";
-      rows.push(`👤 ${name} |🆔 ${b.userId} |🎯 ${b.score || 0} |🎓 ${degree}`);
-    }
-
-    while (rows.length) {
-      await bot.sendMessage(adminChatId, rows.splice(0, 20).join("\n"));
-      await sleep(100);
-    }
-  });
 
   // === sendtoall (text + media/forward) ===
   async function sendToAll(contentFn) {

@@ -43,6 +43,13 @@ function getWebAppUrl() {
   return null;
 }
 
+// Helper: send link to start closed tests
+async function sendClosedTestLink(userId) {
+  const url = getWebAppUrl();
+  if (!url) throw new Error("WEB_APP_URL must be https");
+  await bot.sendMessage(userId, `Yopiq testni ishga tushiring: ${url}`);
+}
+
 // === DATABASE CONNECTIONS ===
 async function connectDBs() {
   try {
@@ -863,12 +870,7 @@ async function connectDBs() {
 
         // Instead of sending results, send a plain URL to start closed tests
         try {
-          const WEB_APP_URL = getWebAppUrl();
-          if (!WEB_APP_URL) throw new Error("WEB_APP_URL must be https");
-          await bot.sendMessage(
-            userId,
-            `Yopiq testni ishga tushiring: ${WEB_APP_URL}`
-          );
+          await sendClosedTestLink(userId);
         } catch (e) {
           console.error("send URL (finish_test) error:", e?.message || e);
         }
@@ -1089,7 +1091,7 @@ async function connectDBs() {
     <div id="form" class="card">
       ${inputs || "<p>Hozircha yopiq testlar yo'q.</p>"}
       <div class="row">
-        <input id="userId" type="number" placeholder="Telegram userId" style="padding:8px;border:1px solid #e5e7eb;border-radius:8px;" />
+        <input id="userId" type="number" placeholder="Profil IDni kiriting" style="padding:8px;border:1px solid #e5e7eb;border-radius:8px;" />
         <button id="check">Tekshirish</button>
       </div>
       <p id="msg"></p>

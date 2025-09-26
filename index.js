@@ -1,6 +1,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
+import express from "express";
 
 dotenv.config();
 
@@ -34,6 +35,13 @@ const isAdmin = (id) => ADMINS.includes(id) || id === MAIN_ADMIN_ID;
 const isMainAdmin = (id) => Number(id) === MAIN_ADMIN_ID;
 const isRegularAdmin = (id) =>
   ADMINS.includes(id) && Number(id) !== MAIN_ADMIN_ID;
+
+// HTTPS Web App URL resolver
+function getWebAppUrl() {
+  const raw = String(process.env.WEB_APP_URL || "").trim();
+  if (raw && /^https:\/\//i.test(raw)) return raw;
+  return null;
+}
 
 // === DATABASE CONNECTIONS ===
 async function connectDBs() {
@@ -849,18 +857,20 @@ async function connectDBs() {
         const percent = Math.round((earned / totalPossible) * 1000) / 10;
 
         await bot.answerCallbackQuery(qid, {
-          text: "✅ Test tugatildi.",
+          text: "✅ Variant test natijalari saqlandi.",
           show_alert: false,
         });
-        const summaryBlock =
-          `📊 Test yakunlandi!\n` +
-          `✅ To'g'ri: ${correct}\n` +
-          `❌ Xato: ${wrong}\n` +
-          `🎯 Ball: ${earned}/${totalPossible}\n` +
-          `📈 Foiz: ${percent}%`;
-        await bot.sendMessage(userId, summaryBlock);
-        if (lines.length) {
-          await bot.sendMessage(userId, lines.join(" "));
+
+        // Instead of sending results, send a plain URL to start closed tests
+        try {
+          const WEB_APP_URL = getWebAppUrl();
+          if (!WEB_APP_URL) throw new Error("WEB_APP_URL must be https");
+          await bot.sendMessage(
+            userId,
+            `Yopiq testni ishga tushiring: ${WEB_APP_URL}`
+          );
+        } catch (e) {
+          console.error("send URL (finish_test) error:", e?.message || e);
         }
         return;
       }
@@ -919,7 +929,10 @@ async function connectDBs() {
 
     // 4) ballarni yangilab (DBda hozirgi balllar) hamma userlarga degree va yakuniy natijani yuborish
     const allTests = await Tests.find().lean();
-    const totalPossible = allTests.reduce((s, t) => s + (t.score || 1), 0) || 1;
+    const allCloseTests = await CloseTests.find().lean();
+    const totalPossibleVariants = allTests.reduce((s, t) => s + (t.score || 1), 0);
+    const totalPossibleClosed = allCloseTests.reduce((s, t) => s + (t.score || 1), 0);
+    const totalPossible = (totalPossibleVariants + totalPossibleClosed) || 1;
 
     function getDegree(percent) {
       if (percent < 55) return "F";
@@ -939,14 +952,21 @@ async function connectDBs() {
       try {
         const chat = await bot.getChat(b.userId);
         const name = chat.first_name || chat.username || "—";
-        await bot.sendMessage(
-          b.userId,
-          `📊 Yakuniy natijangiz:\n👤 ${name}\n🆔 ${b.userId}\n⭐ Ball: ${
-            b.score
-          }/${totalPossible}\n📈 Foiz: ${percent.toFixed(
-            2
-          )}%\n🎓 Daraja: ${degree}`
-        );
+        const correctList = (b.correctAnswers || []).length > 0 ? `✅ To'g'ri: ${(b.correctAnswers || []).join(', ')}` : '';
+        const wrongList = (b.wrongAnswers || []).length > 0 ? `❌ Xato: ${(b.wrongAnswers || []).join(', ')}` : '';
+        
+        let finalMessage = `📊 Yakuniy natijangiz (variant + yopiq):\n` +
+          `👤 ${name}\n` +
+          `🆔 ${b.userId}\n` +
+          `⭐ Ball: ${b.score}/${totalPossible}\n` +
+          `📈 Foiz: ${percent.toFixed(2)}%\n` +
+          `🎓 Daraja: ${degree}`;
+          
+        if (correctList || wrongList) {
+          finalMessage += '\n\n' + [correctList, wrongList].filter(Boolean).join('\n');
+        }
+        
+        await bot.sendMessage(b.userId, finalMessage);
       } catch (e) {
         console.log("push failed to", b.userId, e?.message || e);
       }
@@ -1030,4 +1050,162 @@ async function connectDBs() {
     process.exit(0);
   });
   console.log("Bot ishga tushdi");
+
+  // ====== Web App (MathLive input form) ======
+  const app = express();
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
+
+  // Serve a minimal page with MathLive and dynamic inputs
+  app.get("/", async (req, res) => {
+    const tests = await CloseTests.find().sort({ number: 1 }).lean();
+    const inputs = tests
+      .map(
+        (t) =>
+          `<div style="margin:12px 0;">
+            <label>❓ ${t.number}-savol</label>
+            <math-field style="display:block;border:1px solid #ccc;border-radius:8px;padding:8px;" id="q_${t.number}" virtual-keyboard-mode="onfocus"></math-field>
+          </div>`
+      )
+      .join("");
+
+    const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yopiq Test</title>
+    <script type="module" src="https://unpkg.com/mathlive?module"></script>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 20px; }
+      button { padding: 10px 16px; border-radius: 8px; border: 0; background:#2563eb; color:#fff; cursor:pointer; }
+      button:disabled { opacity: .6; cursor: not-allowed; }
+      .row { display:flex; gap: 8px; align-items:center; flex-wrap: wrap; }
+      .card { padding: 16px; border: 1px solid #e5e7eb; border-radius: 12px; margin-bottom: 16px; }
+    </style>
+  </head>
+  <body>
+    <h1 style="text-align: center;">Yopiq test</h1>
+    <div id="form" class="card">
+      ${inputs || "<p>Hozircha yopiq testlar yo'q.</p>"}
+      <div class="row">
+        <input id="userId" type="number" placeholder="Telegram userId" style="padding:8px;border:1px solid #e5e7eb;border-radius:8px;" />
+        <button id="check">Tekshirish</button>
+      </div>
+      <p id="msg"></p>
+    </div>
+    <script>
+      async function submit() {
+        const btn = document.getElementById('check');
+        btn.disabled = true;
+        const userId = Number(document.getElementById('userId').value || '0');
+        if (!userId) { document.getElementById('msg').textContent = 'UserId kiriting'; btn.disabled = false; return; }
+        const fields = Array.from(document.querySelectorAll('math-field[id^="q_"]'));
+        const answers = {};
+        for (const el of fields) {
+          const qn = Number(el.id.replace('q_',''));
+          answers[qn] = el.value.trim();
+        }
+        const res = await fetch('/api/submit', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ userId, answers }) });
+        const data = await res.json();
+        document.getElementById('msg').textContent = data.message || 'OK';
+        btn.disabled = false;
+      }
+      document.getElementById('check').addEventListener('click', submit);
+    </script>
+  </body>
+</html>`;
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(html);
+  });
+
+  // API: submit answers and update buyer profile
+  app.post("/api/submit", async (req, res) => {
+    try {
+      const userId = Number(req.body?.userId);
+      const answers = req.body?.answers || {};
+      if (!Number.isFinite(userId))
+        return res.status(400).json({ message: "userId noto'g'ri" });
+
+      const tests = await CloseTests.find().sort({ number: 1 }).lean();
+      if (!tests.length)
+        return res.status(400).json({ message: "Yopiq testlar topilmadi" });
+
+      const buyer = await Buyers.findOne({ userId });
+      if (!buyer) return res.status(404).json({ message: "Buyer topilmadi" });
+      // if (buyer.finished) return res.status(400).json({ message: "Test tugatilgan" });
+
+      let correct = 0;
+      let wrong = 0;
+      let earned = 0;
+      const correctQuestions = [];
+      const wrongQuestions = [];
+
+      for (const t of tests) {
+        const qNum = t.number;
+        const picked = String(answers[qNum] ?? "").trim();
+        const expected = String(t.answer ?? "").trim();
+        const isCorrect = picked && expected && picked === expected;
+        if (isCorrect) {
+          correct += 1;
+          earned += t.score || 1;
+          correctQuestions.push(qNum);
+        } else {
+          wrong += 1;
+          wrongQuestions.push(qNum);
+        }
+      }
+
+      const prevCorrect = Array.isArray(buyer.correctAnswers)
+        ? buyer.correctAnswers
+        : [];
+      const prevWrong = Array.isArray(buyer.wrongAnswers)
+        ? buyer.wrongAnswers
+        : [];
+      buyer.correctAnswers = [...prevCorrect, ...correctQuestions];
+      buyer.wrongAnswers = [...prevWrong, ...wrongQuestions];
+      buyer.score = (buyer.score || 0) + earned;
+      await buyer.save();
+
+      const totalPossible = tests.reduce((s, t) => s + (t.score || 1), 0) || 1;
+      const percent = Math.round((earned / totalPossible) * 1000) / 10;
+
+      // Send results summary to buyer in Telegram for closed tests
+      try {
+        // Overall totals (Option tests + Close tests)
+        const allVariantTests = await Tests.find().lean();
+        const totalPossibleVariants = allVariantTests.reduce((s, t) => s + (t.score || 1), 0);
+        const totalPossibleClose = tests.reduce((s, t) => s + (t.score || 1), 0);
+        const totalPossibleOverall = totalPossibleVariants + totalPossibleClose || 1;
+        const earnedOverall = buyer.score || 0; // already cumulative
+        const percentOverall = Math.round((earnedOverall / totalPossibleOverall) * 1000) / 10;
+
+        const overall =
+          `📊 Umumiy natija (variant + yopiq)\n` +
+          `🎯 Jami ball: ${earnedOverall}/${totalPossibleOverall}\n` +
+          `❌ Jami xato: ${(buyer.wrongAnswers || []).length}\n` +
+          `✅ Jami to'g'ri: ${(buyer.correctAnswers || []).length}\n` +
+          `📈 Umumiy foiz: ${percentOverall}%`;
+
+        await bot.sendMessage(userId, overall);
+      } catch (e) {
+        console.error("send closed-test results error:", e?.message || e);
+      }
+
+      return res.json({
+        message: "Yopiq test natijalari saqlandi va foydalanuvchiga yuborildi.",
+        correct,
+        wrong,
+        earned,
+        totalPossible,
+        percent,
+      });
+    } catch (e) {
+      console.error("/api/submit error:", e);
+      return res.status(500).json({ message: "Server xatosi" });
+    }
+  });
+
+  const WEB_PORT = Number(process.env.WEB_PORT || 8080);
+  app.listen(WEB_PORT, () => console.log(`🌐 Web app running on :${WEB_PORT}`));
 })();

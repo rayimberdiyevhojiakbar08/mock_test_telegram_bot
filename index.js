@@ -163,6 +163,7 @@ async function connectDBs() {
     score: { type: Number, default: 0 },
     finished: { type: Boolean, default: false },
     degree: { type: String, default: "—" },
+    answers: { type: Map, of: String, default: {} },
     lastAnswer: {
       qNumber: { type: Number, default: null },
       choiceIdx: { type: Number, default: null },
@@ -170,8 +171,6 @@ async function connectDBs() {
   });
   const testsSchema = new mongoose.Schema({
     number: { type: Number, unique: true },
-    question: { type: String, default: "" },
-    image: { type: String, default: null },
     options: { type: [String], default: ["A", "B", "C", "D"] },
     answer: { type: String, required: true },
     score: { type: Number, default: 1 },
@@ -437,7 +436,7 @@ async function connectDBs() {
 
     await bot.sendMessage(
       adminId,
-      `🛠 Test yaratish boshlandi.\n1️⃣ Rasm yuborish (/skip rasm bo'lmasa)\n2️⃣ Savol matni\n3️⃣ Savol Variantlari\n4️⃣ To'g'ri javob(A,B,C...)\n5️⃣ Ball\nTugatgach /testyaratishni_tugat yozing.`
+      `🛠 Test yaratish boshlandi.\n1️⃣ Savol raqamini kiriting\n2️⃣ Savol Variantlari\n3️⃣ To'g'ri javob(A,B,C...)\n4️⃣ Ball\nTugatgach /testyaratishni_tugat yozing.`
     );
   });
 
@@ -450,6 +449,19 @@ async function connectDBs() {
     if (!session) return; // only handle messages if session exists
 
     const step = session.step;
+
+    // If starting number is not set yet, allow the admin to input it first
+    if (
+      session.data && session.data.number == null &&
+      msg.text && /^\d+$/.test(msg.text.trim())
+    ) {
+      session.data.number = Number(msg.text.trim());
+      await bot.sendMessage(
+        adminId,
+        "✅ Savol raqami qabul qilindi. Endi variantlarni yuboring (vergul bilan ajrating)."
+      );
+      return;
+    }
 
     // /testyaratishni_tugat (also accept /testyaratishni_tugatish)
     if (msg.text && /^\/testyaratishni_tugat(ish)?$/.test(msg.text.trim())) {
@@ -474,8 +486,6 @@ async function connectDBs() {
           {
             $set: {
               number,
-              question: q.question,
-              image: q.image,
               options: q.options,
               answer: q.answer,
               score: q.score,
@@ -495,41 +505,9 @@ async function connectDBs() {
       return;
     }
 
-    // Step 1: rasm yoki /skip
-    if (step === 1) {
-      if (msg.photo) {
-        session.currentQuestion = {
-          image: msg.photo[msg.photo.length - 1].file_id,
-        };
-        session.step = 2;
-        await bot.sendMessage(
-          adminId,
-          "✅ Rasm qabul qilindi. Endi savol matnini yuboring:"
-        );
-        return;
-      } else if (msg.text && msg.text.trim() === "/skip") {
-        session.currentQuestion = { image: null };
-        session.step = 2;
-        await bot.sendMessage(
-          adminId,
-          "✅ Rasm o‘tkazildi. Savol matnini yuboring:"
-        );
-        return;
-      } else {
-        return bot.sendMessage(adminId, "Rasm yuboring yoki /skip yozing.");
-      }
-    }
-
-    // Step 2: Savol matni
-    if (step === 2 && msg.text) {
-      session.currentQuestion.question = msg.text.trim();
-      session.step = 3;
-      await bot.sendMessage(adminId, "🅰️ Variantlarni yuboring:");
-      return;
-    }
-
-    // Step 3: Variantlar
-    if (step === 3 && msg.text) {
+    // Step 1: Variantlar
+    if (step === 1 && msg.text) {
+      if (!session.currentQuestion) session.currentQuestion = {};
       const opts = msg.text
         .split(",")
         .map((s) => s.trim())
@@ -539,7 +517,7 @@ async function connectDBs() {
         return bot.sendMessage(adminId, "⚠️ Kamida 2 ta variant kiriting.");
 
       session.currentQuestion.options = opts;
-      session.step = 4;
+      session.step = 2;
       await bot.sendMessage(
         adminId,
         "✅ To‘g‘ri javobni kiriting (masalan: A):"
@@ -547,16 +525,16 @@ async function connectDBs() {
       return;
     }
 
-    // Step 4: To'g'ri javob
-    if (step === 4 && msg.text) {
+    // Step 2: To'g'ri javob
+    if (step === 2 && msg.text) {
       session.currentQuestion.answer = msg.text.trim().toUpperCase();
-      session.step = 5;
+      session.step = 3;
       await bot.sendMessage(adminId, "🎯 Ballni kiriting (raqam):");
       return;
     }
 
-    // Step 5: Ball
-    if (step === 5 && msg.text) {
+    // Step 3: Ball
+    if (step === 3 && msg.text) {
       const score = Number(msg.text.trim());
       if (isNaN(score))
         return bot.sendMessage(
@@ -573,7 +551,7 @@ async function connectDBs() {
 
       await bot.sendMessage(
         adminId,
-        "➕ Savol qo‘shildi. Yana rasm yuboring yoki /testyaratishni_tugat yozing."
+        "➕ Savol qo‘shildi. Variantlarni yuboring yoki /testyaratishni_tugat yozing."
       );
     }
   });
@@ -588,7 +566,7 @@ async function connectDBs() {
       }
 
       for (const t of tests) {
-        let message = `#️⃣ Test №${t.number}\n\n❓ Savol: ${t.question}\n\n`;
+        let message = `#️⃣ Test №${t.number}\n\n`;
 
         // Variantlarni chiqaramiz
         t.options.forEach((opt, idx) => {
@@ -599,11 +577,7 @@ async function connectDBs() {
         message += `\n✅ To‘g‘ri javob: ${t.answer}\n`;
         message += `🏆 Ball: ${t.score}`;
 
-        if (t.image) {
-          await bot.sendPhoto(adminId, t.image, { caption: message });
-        } else {
-          await bot.sendMessage(adminId, message);
-        }
+        await bot.sendMessage(adminId, message);
       }
     } catch (err) {
       console.error("/testlarniko'rish error:", err);
@@ -643,10 +617,7 @@ async function connectDBs() {
 
         // confirm tugmasi va agar oxirgi savol bo'lsa finish ham qo'shiladi
         const keyboard = {
-          inline_keyboard: [
-            optsRow,
-            [{ text: "✅ Tasdiqlash", callback_data: `confirm_${t.number}` }],
-          ],
+          inline_keyboard: [optsRow],
         };
         if (isLast)
           keyboard.inline_keyboard.push([
@@ -654,25 +625,14 @@ async function connectDBs() {
           ]);
 
         try {
-          if (t.image) {
-            await bot.sendPhoto(buyer.userId, t.image, {
-              caption:
-                `❓ ${t.number}-savol:\n${t.question}\n\n` +
-                t.options
-                  .map((o, idx) => `${String.fromCharCode(65 + idx)}) ${o}`)
-                  .join("\n"),
-              reply_markup: keyboard,
-            });
-          } else {
-            await bot.sendMessage(
-              buyer.userId,
-              `❓ ${t.number}-savol:\n${t.question}\n\n` +
-                t.options
-                  .map((o, idx) => `${String.fromCharCode(65 + idx)}) ${o}`)
-                  .join("\n"),
-              { reply_markup: keyboard }
-            );
-          }
+          await bot.sendMessage(
+            buyer.userId,
+            `❓ ${t.number}-savol:\n` +
+              t.options
+                .map((o, idx) => `${String.fromCharCode(65 + idx)}) ${o}`)
+                .join("\n"),
+            { reply_markup: keyboard }
+          );
         } catch (e) {
           console.log(`send to ${buyer.userId} failed:`, e?.message || e);
         }
@@ -714,123 +674,76 @@ async function connectDBs() {
         const qNumber = Number(parts[1]);
         const choiceIdx = Number(parts[2]);
 
-        // agar oldin javob bergan bo'lsa
-        if (
-          (buyer.correctAnswers || []).includes(qNumber) ||
-          (buyer.wrongAnswers || []).includes(qNumber)
-        ) {
-          return bot.answerCallbackQuery(qid, {
-            text: "⚠️ Bu savolga allaqachon javob bergansiz.",
-            show_alert: false,
-          });
-        }
-
-        // Saqlaymiz — lastAnswerga
-        buyer.lastAnswer = { qNumber, choiceIdx };
+        // Tanlovni darhol answers map ga yozamiz: "1":"A" kabi
+        const letter = String.fromCharCode(65 + choiceIdx);
+        if (!buyer.answers) buyer.answers = new Map();
+        buyer.answers.set(String(qNumber), letter);
         await buyer.save();
 
         return bot.answerCallbackQuery(qid, {
-          text: `📌 Siz ${String.fromCharCode(
-            65 + choiceIdx
-          )} variantini tanladingiz. Endi "Tasdiqlash" tugmasini bosing.`,
-          show_alert: true,
+          text: `📌 ${qNumber}: ${letter} saqlandi`,
+          show_alert: false,
         });
       }
 
-      // 2) tasdiqlash: confirm_<qNumber>
-      if (data.startsWith("confirm_")) {
-        const parts = data.split("_");
-        const qNumber = Number(parts[1]);
-
-        if (!buyer.lastAnswer || buyer.lastAnswer.qNumber !== qNumber) {
-          return bot.answerCallbackQuery(qid, {
-            text: "⚠️ Avval variantni tanlang.",
-            show_alert: true,
-          });
-        }
-
-        const choiceIdx = buyer.lastAnswer.choiceIdx;
-        const test = await Tests.findOne({ number: qNumber }).lean();
-        if (!test)
-          return bot.answerCallbackQuery(qid, {
-            text: "⚠️ Savol topilmadi.",
-            show_alert: true,
-          });
-
-        const correctIdx = parseCorrectIndex(test);
-        const isCorrect = !isNaN(correctIdx) ? choiceIdx === correctIdx : false;
-
-        if (isCorrect) {
-          // duplicate tekshiruvi
-          if (!buyer.correctAnswers.includes(qNumber)) {
-            buyer.correctAnswers.push(qNumber);
-            buyer.score += test.score || 1;
-          }
-          await buyer.save();
-          await bot.answerCallbackQuery(qid, {
-            text: "✅ To‘g‘ri javob!",
-            show_alert: false,
-          });
-        } else {
-          if (!buyer.wrongAnswers.includes(qNumber))
-            buyer.wrongAnswers.push(qNumber);
-          await buyer.save();
-          await bot.answerCallbackQuery(qid, {
-            text: "❌ Noto‘g‘ri javob.",
-            show_alert: false,
-          });
-        }
-
-        // clear lastAnswer
-        buyer.lastAnswer = { qNumber: null, choiceIdx: null };
-        await buyer.save();
-        return;
-      }
+      // confirm_ bosqichi olib tashlandi
 
       // 3) testni tugatish (foydalanuvchi tugatishi uchun: oxirgi savolda chiqadi)
       if (data === "finish_test") {
-        // agar lastAnswer bor va oxirgi savol bo'yicha tasdiqlanmagan bo'lsa, biz uni avtomatik confirm qilishga urinib ko'ramiz
-        if (buyer.lastAnswer && buyer.lastAnswer.qNumber) {
-          const qNumber = buyer.lastAnswer.qNumber;
-          const choiceIdx = buyer.lastAnswer.choiceIdx;
-          const test = await Tests.findOne({ number: qNumber }).lean();
-          if (test) {
-            const correctIdx = parseCorrectIndex(test);
-            const isCorrect = !isNaN(correctIdx)
-              ? choiceIdx === correctIdx
-              : false;
-            if (isCorrect) {
-              if (!buyer.correctAnswers.includes(qNumber)) {
-                buyer.correctAnswers.push(qNumber);
-                buyer.score += test.score || 1;
-              }
-            } else {
-              if (!buyer.wrongAnswers.includes(qNumber))
-                buyer.wrongAnswers.push(qNumber);
-            }
+        // Barcha saqlangan javoblar bo'yicha tekshiramiz
+        const allTests = await Tests.find().sort({ number: 1 }).lean();
+        const answersMap = buyer.answers || new Map();
+        let correct = 0;
+        let wrong = 0;
+        let earned = 0;
+        const lines = [];
+
+        buyer.correctAnswers = [];
+        buyer.wrongAnswers = [];
+        buyer.score = 0;
+
+        for (const t of allTests) {
+          const qNum = t.number;
+          const picked = answersMap.get(String(qNum)) || "";
+          const correctIdx = parseCorrectIndex(t);
+          const correctLetter = !isNaN(correctIdx)
+            ? String.fromCharCode(65 + correctIdx)
+            : "";
+          const isCorrect = picked && correctLetter && picked === correctLetter;
+          if (isCorrect) {
+            correct += 1;
+            earned += t.score || 1;
+            buyer.correctAnswers.push(qNum);
+            lines.push(`${qNum} ✅\n`);
+          } else {
+            wrong += 1;
+            buyer.wrongAnswers.push(qNum);
+            lines.push(`${qNum} ❌\n`);
           }
         }
 
         buyer.finished = true;
         buyer.lastAnswer = { qNumber: null, choiceIdx: null };
+        buyer.score = earned;
         await buyer.save();
 
-        // yuborish — yakuniy xabar
-        const allTests = await Tests.find().lean();
-        const totalPossible =
-          allTests.reduce((s, t) => s + (t.score || 1), 0) || 1;
-        const correctCount = (buyer.correctAnswers || []).length;
-        const wrongCount = (buyer.wrongAnswers || []).length;
-        const percent = Math.round((buyer.score / totalPossible) * 1000) / 10;
+        const totalPossible = allTests.reduce((s, t) => s + (t.score || 1), 0) || 1;
+        const percent = Math.round((earned / totalPossible) * 1000) / 10;
 
         await bot.answerCallbackQuery(qid, {
           text: "✅ Test tugatildi.",
           show_alert: false,
         });
-        await bot.sendMessage(
-          userId,
-          `📊 Test yakunlandi!\n✅ To'g'ri: ${correctCount}\n❌ Xato: ${wrongCount}\n🎯 Ball: ${buyer.score}/${totalPossible}\n📈 Foiz: ${percent}%`
-        );
+        const summaryBlock =
+          `📊 Test yakunlandi!\n` +
+          `✅ To'g'ri: ${correct}\n` +
+          `❌ Xato: ${wrong}\n` +
+          `🎯 Ball: ${earned}/${totalPossible}\n` +
+          `📈 Foiz: ${percent}%`;
+        await bot.sendMessage(userId, summaryBlock);
+        if (lines.length) {
+          await bot.sendMessage(userId, lines.join(" "));
+        }
         return;
       }
     } catch (err) {

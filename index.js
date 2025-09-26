@@ -16,6 +16,7 @@ const MAIN_ADMIN_ID = Number(process.env.MAIN_ADMIN_ID || "0");
 const USERS_MONGO_URI = process.env.USERS_MONGO_URI;
 const BUYERS_MONGO_URI = process.env.BUYERS_MONGO_URI;
 const TESTS_MONGO_URI = process.env.TESTS_MONGO_URI;
+const CLOSE_TEST_MONGO_URI = process.env.CLOSE_TEST_MONGO_URI;
 
 const RATE_LIMIT_DELAY = Number(process.env.RATE_LIMIT_DELAY_MS || 120);
 
@@ -31,7 +32,8 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const isAdmin = (id) => ADMINS.includes(id) || id === MAIN_ADMIN_ID;
 const isMainAdmin = (id) => Number(id) === MAIN_ADMIN_ID;
-const isRegularAdmin = (id) => ADMINS.includes(id) && Number(id) !== MAIN_ADMIN_ID;
+const isRegularAdmin = (id) =>
+  ADMINS.includes(id) && Number(id) !== MAIN_ADMIN_ID;
 
 // === DATABASE CONNECTIONS ===
 async function connectDBs() {
@@ -53,13 +55,17 @@ async function connectDBs() {
     .createConnection(TESTS_MONGO_URI, {})
     .asPromise();
   console.log("✅ Connected to TESTS DB");
+  const closeTestConn = await mongoose
+    .createConnection(CLOSE_TEST_MONGO_URI, {})
+    .asPromise();
+  console.log("✅ Connected to CLOSE_TEST DB");
 
-  return { buyerConn, testConn };
+  return { buyerConn, testConn, closeTestConn };
 }
 
 // === INIT ===
 (async () => {
-  const { buyerConn, testConn } = await connectDBs();
+  const { buyerConn, testConn, closeTestConn } = await connectDBs();
 
   // ====== Schemas ======
   const usersSchema = new mongoose.Schema({
@@ -72,7 +78,10 @@ async function connectDBs() {
   // Shared: show users count
   async function handleShowUsers(adminId) {
     const doc = await Users.findOne();
-    return bot.sendMessage(adminId, `👥 Userlar soni: ${doc?.ids?.length || 0}`);
+    return bot.sendMessage(
+      adminId,
+      `👥 Userlar soni: ${doc?.ids?.length || 0}`
+    );
   }
 
   // /userlarsoni command (single handler)
@@ -138,9 +147,7 @@ async function connectDBs() {
         name = c.first_name || c.username || "?";
       } catch (e) {}
       const percent = Math.round((b.score / totalPossible) * 1000) / 10;
-      lines.push(
-        `${name} |🎯${b.score} |📈${percent}%|🎓${b.degree}`
-      );
+      lines.push(`${name} |🎯${b.score} |📈${percent}%|🎓${b.degree}`);
     }
 
     while (lines.length)
@@ -175,10 +182,16 @@ async function connectDBs() {
     answer: { type: String, required: true },
     score: { type: Number, default: 1 },
   });
+  const closeTestSchema = new mongoose.Schema({
+    number: { type: Number, unique: true },
+    answer: { type: String, required: true },
+    score: { type: Number, default: 1 },
+  });
   // Models
   const Users = mongoose.model("Users", usersSchema); // default conn
   const Buyers = buyerConn.model("Buyer", BuyersSchema);
   const Tests = testConn.model("Test", testsSchema);
+  const CloseTests = closeTestConn.model("CloseTest", closeTestSchema);
 
   // Ensure correct indexes on Buyers and clean up legacy ones
   try {
@@ -211,9 +224,13 @@ async function connectDBs() {
         keyboard: [
           [{ text: "/testlarniko'rish" }, { text: "/userlarsoni" }],
           [{ text: "/ishtirokchilar" }, { text: "/natijalar" }],
-          [{ text: "/testlarnio'chirish" }, { text: "/ishtirokchilarnio'chirish" }],
+          [
+            { text: "/testlarnio'chirish" },
+            { text: "/ishtirokchilarnio'chirish" },
+          ],
           [{ text: "/testyaratish" }, { text: "/testniboshlash" }],
-          [{ text: "/testni_tugatish" }],
+          [{ text: "/yopiqtestyaratish" }, { text: "/yopiqtestniko'rish" }],
+          [{ text: "/testni_tugatish" }, { text: "/yopiqtesto'chirish" }],
         ],
         resize_keyboard: true,
         one_time_keyboard: false,
@@ -374,7 +391,10 @@ async function connectDBs() {
         }
       } catch (err) {
         console.error("/buy error:", err);
-        if (err?.code === 11000 || (err?.message && err.message.includes("duplicate"))) {
+        if (
+          err?.code === 11000 ||
+          (err?.message && err.message.includes("duplicate"))
+        ) {
           results.push(`🆔 ${userId}: ⚠️ Allaqachon mavjud`);
         } else {
           results.push(`🆔 ${userId}: ❌ Xatolik`);
@@ -452,13 +472,15 @@ async function connectDBs() {
 
     // If starting number is not set yet, allow the admin to input it first
     if (
-      session.data && session.data.number == null &&
-      msg.text && /^\d+$/.test(msg.text.trim())
+      session.data &&
+      session.data.number == null &&
+      msg.text &&
+      /^\d+$/.test(msg.text.trim())
     ) {
       session.data.number = Number(msg.text.trim());
       await bot.sendMessage(
         adminId,
-        "✅ Savol raqami qabul qilindi. Endi variantlarni yuboring (vergul bilan ajrating)."
+        "✅ Savol raqami qabul qilindi. Endi variantlar sonini kiriting(2/3/4)."
       );
       return;
     }
@@ -508,10 +530,21 @@ async function connectDBs() {
     // Step 1: Variantlar
     if (step === 1 && msg.text) {
       if (!session.currentQuestion) session.currentQuestion = {};
-      const opts = msg.text
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
+
+      const raw = msg.text.trim();
+      const numericCount = /^\d+$/.test(raw) ? Number(raw) : null;
+
+      let opts;
+      if (numericCount && [2, 3, 4].includes(numericCount)) {
+        opts = Array.from({ length: numericCount }, (_, i) =>
+          String.fromCharCode(65 + i)
+        );
+      } else {
+        opts = raw
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+      }
 
       if (opts.length < 2)
         return bot.sendMessage(adminId, "⚠️ Kamida 2 ta variant kiriting.");
@@ -551,7 +584,7 @@ async function connectDBs() {
 
       await bot.sendMessage(
         adminId,
-        "➕ Savol qo‘shildi. Variantlarni yuboring yoki /testyaratishni_tugat yozing."
+        "➕ Savol qo‘shildi. /testyaratishni_tugat yozing."
       );
     }
   });
@@ -566,13 +599,13 @@ async function connectDBs() {
       }
 
       for (const t of tests) {
-        let message = `#️⃣ Test №${t.number}\n\n`;
+        let message = `#️⃣ Test №${t.number}`;
 
-        // Variantlarni chiqaramiz
-        t.options.forEach((opt, idx) => {
-          const letter = String.fromCharCode(65 + idx); // 65 = 'A'
-          message += `${letter}) ${opt}\n`;
-        });
+        // // Variantlarni chiqaramiz
+        // t.options.forEach((opt, idx) => {
+        //   const letter = String.fromCharCode(65 + idx); // 65 = 'A'
+        //   message += `${letter}) ${opt}\n`;
+        // });
 
         message += `\n✅ To‘g‘ri javob: ${t.answer}\n`;
         message += `🏆 Ball: ${t.score}`;
@@ -625,14 +658,9 @@ async function connectDBs() {
           ]);
 
         try {
-          await bot.sendMessage(
-            buyer.userId,
-            `❓ ${t.number}-savol:\n` +
-              t.options
-                .map((o, idx) => `${String.fromCharCode(65 + idx)}) ${o}`)
-                .join("\n"),
-            { reply_markup: keyboard }
-          );
+          await bot.sendMessage(buyer.userId, `❓ ${t.number}-savol:`, {
+            reply_markup: keyboard,
+          });
         } catch (e) {
           console.log(`send to ${buyer.userId} failed:`, e?.message || e);
         }
@@ -651,6 +679,65 @@ async function connectDBs() {
     if (!isAdmin(adminId))
       return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
     await sendAllTestsToBuyers(adminId);
+  });
+
+  bot.onText(
+    /^\/yopiqtestyaratish\s+(\d+)\s+(\S+)\s+(\d+(?:\.\d+)?)/,
+    async (msg, match) => {
+      const adminId = msg.chat.id;
+      if (!isMainAdmin(adminId)) return;
+
+      const number = Number(match[1]);
+      const rawAnswer = String(match[2]).trim();
+      const score = Number(match[3]);
+
+      const answerValue = rawAnswer; // store as-is
+
+      await CloseTests.updateOne(
+        { number },
+        {
+          $set: {
+            number,
+            answer: answerValue,
+            score,
+          },
+        },
+        { upsert: true }
+      );
+
+      return bot.sendMessage(
+        adminId,
+        `✅ Yopiq test saqlandi\n#️⃣ ${number}-savol\n✅ Javob: ${answerValue}\n🏆 Ball: ${score}`
+      );
+    }
+  );
+
+  // ====== /yopiqtestniko'rish (admin) ======
+  bot.onText(/\/yopiqtestniko'rish/, async (msg) => {
+    const adminId = msg.chat.id;
+    if (!isAdmin(adminId)) {
+      return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
+    }
+
+    const items = await CloseTests.find().sort({ number: 1 }).lean();
+    if (!items.length) {
+      return bot.sendMessage(adminId, "⚠️ Hozircha yopiq testlar yo'q.");
+    }
+
+    for (const t of items) {
+      const message = `#️⃣ ${t.number}-savol\n✅ Javob: ${t.answer}\n🏆 Ball: ${t.score}`;
+      await bot.sendMessage(adminId, message);
+    }
+  });
+
+  // ====== /yopiqtesto'chirish (admin) ======
+  bot.onText(/\/yopiqtesto'chirish/, async (msg) => {
+    const adminId = msg.chat.id;
+    if (!isAdmin(adminId)) {
+      return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
+    }
+    await CloseTests.deleteMany({});
+    return bot.sendMessage(adminId, "🗑️ Barcha yopiq testlar o'chirildi");
   });
 
   // ====== callback_query: pick / confirm / finish_test ======
@@ -680,10 +767,40 @@ async function connectDBs() {
         buyer.answers.set(String(qNumber), letter);
         await buyer.save();
 
-        return bot.answerCallbackQuery(qid, {
-          text: `📌 ${qNumber}: ${letter} saqlandi`,
-          show_alert: false,
-        });
+        // Update inline keyboard: show selected option with a check mark
+        try {
+          const test = await Tests.findOne({ number: qNumber }).lean();
+          const lastTest = await Tests.findOne({}).sort({ number: -1 }).lean();
+          const isLast = lastTest && lastTest.number === qNumber;
+
+          const optionsLength =
+            test && Array.isArray(test.options)
+              ? test.options.length
+              : Math.max(choiceIdx + 1, 2);
+          const optsRow = Array.from({ length: optionsLength }, (_, idx) => ({
+            text: `${String.fromCharCode(65 + idx)}${
+              idx === choiceIdx ? " ✅" : ""
+            }`,
+            callback_data: `pick_${qNumber}_${idx}`,
+          }));
+
+          const newKeyboard = { inline_keyboard: [optsRow] };
+          if (isLast) {
+            newKeyboard.inline_keyboard.push([
+              { text: "🏁 Testni tugatish", callback_data: "finish_test" },
+            ]);
+          }
+
+          await bot.editMessageReplyMarkup(newKeyboard, {
+            chat_id: query.message.chat.id,
+            message_id: query.message.message_id,
+          });
+        } catch (e) {}
+
+        // return bot.answerCallbackQuery(qid, {
+        //   text: `📌 ${qNumber}: ${letter} saqlandi`,
+        //   show_alert: false,
+        // });
       }
 
       // confirm_ bosqichi olib tashlandi
@@ -727,7 +844,8 @@ async function connectDBs() {
         buyer.score = earned;
         await buyer.save();
 
-        const totalPossible = allTests.reduce((s, t) => s + (t.score || 1), 0) || 1;
+        const totalPossible =
+          allTests.reduce((s, t) => s + (t.score || 1), 0) || 1;
         const percent = Math.round((earned / totalPossible) * 1000) / 10;
 
         await bot.answerCallbackQuery(qid, {

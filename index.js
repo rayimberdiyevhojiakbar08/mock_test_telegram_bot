@@ -127,7 +127,11 @@ async function connectDBs() {
         } catch (_) {}
       }
       const degree = b.degree || "—";
-      rows.push(`👤 ${name} |🆔 ${b.userId} |🎯 ${b.score || 0} |🎓 ${degree}`);
+      rows.push(
+        `👤 ${name} |🆔 ${b.userId} |🎯 ${
+          b.score.toFixed(1) || 0
+        } |🎓 ${degree}`
+      );
     }
 
     while (rows.length) {
@@ -161,8 +165,11 @@ async function connectDBs() {
         const c = await bot.getChat(b.userId);
         name = c.first_name || c.username || "?";
       } catch (e) {}
-      const percent = Math.round((b.score / totalPossible) * 1000) / 10;
-      lines.push(`${name} |🎯${b.score} |📈${percent}%|🎓${b.degree}`);
+      const percent =
+        Math.round((b.score.toFixed(1) / totalPossible.toFixed(1)) * 1000) / 10;
+      lines.push(
+        `${name} |🎯${b.score.toFixed(1)} |📈${percent}%|🎓${b.degree}`
+      );
     }
 
     while (lines.length)
@@ -180,10 +187,11 @@ async function connectDBs() {
 
   const BuyersSchema = new mongoose.Schema({
     userId: { type: Number, required: true, unique: true },
-    correctAnswers: { type: [Number], default: [] },
-    wrongAnswers: { type: [Number], default: [] },
+    correctAnswers: { type: [String], default: [] },
+    wrongAnswers: { type: [String], default: [] },
     score: { type: Number, default: 0 },
     finished: { type: Boolean, default: false },
+    closeTestFinished: { type: Boolean, default: false },
     degree: { type: String, default: "—" },
     answers: { type: Map, of: String, default: {} },
     lastAnswer: {
@@ -199,8 +207,14 @@ async function connectDBs() {
   });
   const closeTestSchema = new mongoose.Schema({
     number: { type: Number, unique: true },
-    answer: { type: String, required: true },
-    score: { type: Number, default: 1 },
+    answerA: {
+      value: { type: String, required: true },
+      score: { type: Number, default: 1 },
+    },
+    answerB: {
+      value: { type: String, required: true },
+      score: { type: Number, default: 1 },
+    },
   });
   // Models
   const Users = mongoose.model("Users", usersSchema); // default conn
@@ -535,7 +549,7 @@ async function connectDBs() {
       const totalTests = await Tests.countDocuments();
       await bot.sendMessage(
         adminId,
-        `✅ Savol saqlandi!\n${totalTests} ta test bor.`
+        `✅ Savol saqlandi!\n${totalTests} ta test bor.\n /testyaratish`
       );
 
       delete creatingTestSessions[adminId];
@@ -623,7 +637,7 @@ async function connectDBs() {
         // });
 
         message += `\n✅ To‘g‘ri javob: ${t.answer}\n`;
-        message += `🏆 Ball: ${t.score}`;
+        message += `🏆 Ball: ${t.score.toFixed(1)}`;
 
         await bot.sendMessage(adminId, message);
       }
@@ -652,41 +666,49 @@ async function connectDBs() {
       return bot.sendMessage(adminId, "🚫 Buyers mavjud emas.");
 
     for (const buyer of buyers) {
-      if (buyer.finished) continue; // agar tugatilgan bo'lsa o'tkazish
-      for (let i = 0; i < tests.length; i++) {
-        const t = tests[i];
-        const isLast = i === tests.length - 1;
+      if (buyer.finished) continue;
 
-        // variantlar (A,B,C,...) bir qator davomida
-        const optsRow = t.options.map((opt, idx) => ({
-          text: String.fromCharCode(65 + idx),
-          callback_data: `pick_${t.number}_${idx}`,
-        }));
-
-        // confirm tugmasi va agar oxirgi savol bo'lsa finish ham qo'shiladi
-        const keyboard = {
-          inline_keyboard: [optsRow],
-        };
-        if (isLast)
-          keyboard.inline_keyboard.push([
-            { text: "🏁 Testni tugatish", callback_data: "finish_test" },
-          ]);
-
-        try {
-          await bot.sendMessage(buyer.userId, `❓ ${t.number}-savol:`, {
-            reply_markup: keyboard,
-          });
-        } catch (e) {
-          console.log(`send to ${buyer.userId} failed:`, e?.message || e);
-        }
-
-        await sleep(RATE_LIMIT_DELAY);
-      }
+      // 1-savoldan boshlaymiz
+      await sendTestQuestion(buyer.userId, tests, 0);
+      await sleep(RATE_LIMIT_DELAY);
     }
+
     await bot.sendMessage(
       adminId,
       `✅ Testlar yuborildi (${buyers.length} buyers).`
     );
+  }
+
+  async function sendTestQuestion(userId, tests, index) {
+    const t = tests[index];
+    if (!t) return;
+
+    const isFirst = index === 0;
+    const isLast = index === tests.length - 1;
+
+    const optsRow = t.options.map((opt, idx) => ({
+      text: String.fromCharCode(65 + idx),
+      callback_data: `pick_${t.number}_${idx}`,
+    }));
+
+    const navRow = [];
+    if (!isFirst)
+      navRow.push({ text: "⬅️ Orqaga", callback_data: `nav_${index - 1}` });
+    if (!isLast)
+      navRow.push({ text: "➡️ Oldinga", callback_data: `nav_${index + 1}` });
+    if (isLast)
+      navRow.push({ text: "🏁 Tugatish", callback_data: "finish_test" });
+
+    const keyboard = { inline_keyboard: [optsRow] };
+    if (navRow.length) keyboard.inline_keyboard.push(navRow);
+
+    try {
+      await bot.sendMessage(userId, `❓ ${t.number}-savol:`, {
+        reply_markup: keyboard,
+      });
+    } catch (e) {
+      console.log(`send to ${userId} failed:`, e?.message || e);
+    }
   }
 
   bot.onText(/\/testniboshlash/, async (msg) => {
@@ -696,36 +718,125 @@ async function connectDBs() {
     await sendAllTestsToBuyers(adminId);
   });
 
-  bot.onText(
-    /^\/yopiqtestyaratish\s+(\d+)\s+(\S+)\s+(\d+(?:\.\d+)?)/,
-    async (msg, match) => {
-      const adminId = msg.chat.id;
-      if (!isMainAdmin(adminId)) return;
+  // Yopiq test yaratish uchun state saqlash
+  const closeTestState = {};
 
-      const number = Number(match[1]);
-      const rawAnswer = String(match[2]).trim();
-      const score = Number(match[3]);
+  // Boshlash
+  bot.onText(/\/yopiqtestyaratish/, async (msg) => {
+    const adminId = msg.chat.id;
+    if (!isMainAdmin(adminId)) return;
 
-      const answerValue = rawAnswer; // store as-is
+    closeTestState[adminId] = { step: 1, data: {} };
 
-      await CloseTests.updateOne(
-        { number },
-        {
-          $set: {
-            number,
-            answer: answerValue,
-            score,
+    return bot.sendMessage(adminId, "✍️ 1-qadam: Savol raqamini kiriting:");
+  });
+
+  // Step-by-step jarayon
+  bot.on("message", async (msg) => {
+    const adminId = msg.chat.id;
+    if (!isMainAdmin(adminId)) return;
+    if (!closeTestState[adminId]) return;
+
+    const state = closeTestState[adminId];
+    const text = msg.text?.trim();
+
+    switch (state.step) {
+      case 1: {
+        // Savol raqami
+        if (!/^\d+$/.test(text)) {
+          return bot.sendMessage(
+            adminId,
+            "❌ Savol raqami faqat son bo‘lishi kerak. Qaytadan kiriting:"
+          );
+        }
+        state.data.number = Number(text);
+        state.step = 2;
+        return bot.sendMessage(adminId, "✍️ 2-qadam: A javobni kiriting:");
+      }
+
+      case 2: {
+        // A javobi
+        state.data.answerA = text;
+        state.step = 3;
+        return bot.sendMessage(
+          adminId,
+          "✍️ 3-qadam: A ballni kiriting yoki /skipAscore:"
+        );
+      }
+
+      case 3: {
+        // A ball
+        if (text === "/skipAscore") {
+          state.data.scoreA = 1.5;
+        } else {
+          if (!/^\d+(\.\d+)?$/.test(text)) {
+            return bot.sendMessage(
+              adminId,
+              "❌ Ball faqat son bo‘lishi kerak. Qaytadan kiriting:"
+            );
+          }
+          state.data.scoreA = Number(text);
+        }
+        state.step = 4;
+        return bot.sendMessage(adminId, "✍️ 4-qadam: B javobni kiriting:");
+      }
+
+      case 4: {
+        // B javobi
+        state.data.answerB = text;
+        state.step = 5;
+        return bot.sendMessage(
+          adminId,
+          "✍️ 5-qadam: B ballni kiriting yoki /skipBscore:"
+        );
+      }
+
+      case 5: {
+        // B ball
+        if (text === "/skipBscore") {
+          state.data.scoreB = 1.7;
+        } else {
+          if (!/^\d+(\.\d+)?$/.test(text)) {
+            return bot.sendMessage(
+              adminId,
+              "❌ Ball faqat son bo‘lishi kerak. Qaytadan kiriting:"
+            );
+          }
+          state.data.scoreB = Number(text);
+        }
+
+        // DB ga yozish
+        await CloseTests.updateOne(
+          { number: state.data.number },
+          {
+            $set: {
+              number: state.data.number,
+              answerA: {
+                value: state.data.answerA,
+                score: state.data.scoreA,
+              },
+              answerB: {
+                value: state.data.answerB,
+                score: state.data.scoreB,
+              },
+            },
           },
-        },
-        { upsert: true }
-      );
+          { upsert: true }
+        );
 
-      return bot.sendMessage(
-        adminId,
-        `✅ Yopiq test saqlandi\n#️⃣ ${number}-savol\n✅ Javob: ${answerValue}\n🏆 Ball: ${score}`
-      );
+        // State tozalash
+        const saved = { ...state.data };
+        delete closeTestState[adminId];
+
+        return bot.sendMessage(
+          adminId,
+          `✅ Yopiq test saqlandi\n#️⃣ ${saved.number}-savol\n` +
+            `✅ A: ${saved.answerA} (${saved.scoreA} ball)\n` +
+            `✅ B: ${saved.answerB} (${saved.scoreB} ball)`
+        );
+      }
     }
-  );
+  });
 
   // ====== /yopiqtestniko'rish (admin) ======
   bot.onText(/\/yopiqtestniko'rish/, async (msg) => {
@@ -740,7 +851,11 @@ async function connectDBs() {
     }
 
     for (const t of items) {
-      const message = `#️⃣ ${t.number}-savol\n✅ Javob: ${t.answer}\n🏆 Ball: ${t.score}`;
+      const message = `#️⃣ ${t.number}-savol\n✅ A javob: ${
+        t.answerA?.value || "N/A"
+      } (${t.answerA?.score || 0} ball)\n✅ B javob: ${
+        t.answerB?.value || "N/A"
+      } (${t.answerB?.score || 0} ball)`;
       await bot.sendMessage(adminId, message);
     }
   });
@@ -755,7 +870,7 @@ async function connectDBs() {
     return bot.sendMessage(adminId, "🗑️ Barcha yopiq testlar o'chirildi");
   });
 
-  // ====== callback_query: pick / confirm / finish_test ======
+  // ====== callback_query: pick / nav / finish_test ======
   bot.on("callback_query", async (query) => {
     const data = String(query.data || "");
     const userId = query.from.id;
@@ -770,65 +885,77 @@ async function connectDBs() {
           show_alert: true,
         });
 
+      // oldinga / orqaga tugmalari
+      if (data.startsWith("nav_")) {
+        const idx = Number(data.split("_")[1]);
+        const tests = await Tests.find().sort({ number: 1 }).lean();
+        await sendTestQuestion(userId, tests, idx);
+
+        return bot.answerCallbackQuery(qid);
+      }
+
       // 1) variant tanlash: pick_<qNumber>_<idx>
       if (data.startsWith("pick_")) {
         const parts = data.split("_");
         const qNumber = Number(parts[1]);
         const choiceIdx = Number(parts[2]);
 
-        // Tanlovni darhol answers map ga yozamiz: "1":"A" kabi
+        // Tanlovni saqlash
         const letter = String.fromCharCode(65 + choiceIdx);
         if (!buyer.answers) buyer.answers = new Map();
         buyer.answers.set(String(qNumber), letter);
         await buyer.save();
 
-        // Update inline keyboard: show selected option with a check mark
+        // Inline keyboardni yangilash
         try {
-          const test = await Tests.findOne({ number: qNumber }).lean();
-          const lastTest = await Tests.findOne({}).sort({ number: -1 }).lean();
-          const isLast = lastTest && lastTest.number === qNumber;
+          const tests = await Tests.find().sort({ number: 1 }).lean();
+          const testIndex = tests.findIndex((t) => t.number === qNumber);
+          const test = tests[testIndex];
+          const isFirst = testIndex === 0;
+          const isLast = testIndex === tests.length - 1;
 
-          const optionsLength =
-            test && Array.isArray(test.options)
-              ? test.options.length
-              : Math.max(choiceIdx + 1, 2);
-          const optsRow = Array.from({ length: optionsLength }, (_, idx) => ({
+          // variantlar
+          const optsRow = test.options.map((opt, idx) => ({
             text: `${String.fromCharCode(65 + idx)}${
               idx === choiceIdx ? " ✅" : ""
             }`,
             callback_data: `pick_${qNumber}_${idx}`,
           }));
 
+          // navigatsiya tugmalari
+          const navRow = [];
+          if (!isFirst)
+            navRow.push({
+              text: "⬅️ Orqaga",
+              callback_data: `nav_${testIndex - 1}`,
+            });
+          if (!isLast)
+            navRow.push({
+              text: "➡️ Oldinga",
+              callback_data: `nav_${testIndex + 1}`,
+            });
+          if (isLast)
+            navRow.push({ text: "🏁 Tugatish", callback_data: "finish_test" });
+
           const newKeyboard = { inline_keyboard: [optsRow] };
-          if (isLast) {
-            newKeyboard.inline_keyboard.push([
-              { text: "🏁 Testni tugatish", callback_data: "finish_test" },
-            ]);
-          }
+          if (navRow.length) newKeyboard.inline_keyboard.push(navRow);
 
           await bot.editMessageReplyMarkup(newKeyboard, {
             chat_id: query.message.chat.id,
             message_id: query.message.message_id,
           });
-        } catch (e) {}
-
-        // return bot.answerCallbackQuery(qid, {
-        //   text: `📌 ${qNumber}: ${letter} saqlandi`,
-        //   show_alert: false,
-        // });
+        } catch (e) {
+          console.error("editMessageReplyMarkup error:", e);
+        }
       }
 
-      // confirm_ bosqichi olib tashlandi
-
-      // 3) testni tugatish (foydalanuvchi tugatishi uchun: oxirgi savolda chiqadi)
+      // 2) testni tugatish
       if (data === "finish_test") {
-        // Barcha saqlangan javoblar bo'yicha tekshiramiz
         const allTests = await Tests.find().sort({ number: 1 }).lean();
         const answersMap = buyer.answers || new Map();
         let correct = 0;
         let wrong = 0;
         let earned = 0;
-        const lines = [];
 
         buyer.correctAnswers = [];
         buyer.wrongAnswers = [];
@@ -846,11 +973,9 @@ async function connectDBs() {
             correct += 1;
             earned += t.score || 1;
             buyer.correctAnswers.push(qNum);
-            lines.push(`${qNum} ✅\n`);
           } else {
             wrong += 1;
             buyer.wrongAnswers.push(qNum);
-            lines.push(`${qNum} ❌\n`);
           }
         }
 
@@ -868,7 +993,6 @@ async function connectDBs() {
           show_alert: false,
         });
 
-        // Instead of sending results, send a plain URL to start closed tests
         try {
           await sendClosedTestLink(userId);
         } catch (e) {
@@ -932,17 +1056,23 @@ async function connectDBs() {
     // 4) ballarni yangilab (DBda hozirgi balllar) hamma userlarga degree va yakuniy natijani yuborish
     const allTests = await Tests.find().lean();
     const allCloseTests = await CloseTests.find().lean();
-    const totalPossibleVariants = allTests.reduce((s, t) => s + (t.score || 1), 0);
-    const totalPossibleClosed = allCloseTests.reduce((s, t) => s + (t.score || 1), 0);
-    const totalPossible = (totalPossibleVariants + totalPossibleClosed) || 1;
+    const totalPossibleVariants = allTests.reduce(
+      (s, t) => s + (t.score || 1),
+      0
+    );
+    const totalPossibleClosed = allCloseTests.reduce(
+      (s, t) => s + (t.answerA?.score || 0) + (t.answerB?.score || 0),
+      0
+    );
+    const totalPossible = totalPossibleVariants + totalPossibleClosed || 1;
 
     function getDegree(percent) {
-      if (percent < 55) return "F";
-      if (percent < 60) return "C";
-      if (percent < 70) return "C+";
-      if (percent < 75) return "B";
-      if (percent < 85) return "B+";
-      if (percent < 90) return "A";
+      if (percent < 70) return "F";
+      if (percent < 75) return "C";
+      if (percent < 83) return "C+";
+      if (percent < 91) return "B";
+      if (percent < 99) return "B+";
+      if (percent < 100) return "A";
       return "A+";
     }
 
@@ -954,20 +1084,28 @@ async function connectDBs() {
       try {
         const chat = await bot.getChat(b.userId);
         const name = chat.first_name || chat.username || "—";
-        const correctList = (b.correctAnswers || []).length > 0 ? `✅ To'g'ri: ${(b.correctAnswers || []).join(', ')}` : '';
-        const wrongList = (b.wrongAnswers || []).length > 0 ? `❌ Xato: ${(b.wrongAnswers || []).join(', ')}` : '';
-        
-        let finalMessage = `📊 Yakuniy natijangiz (variant + yopiq):\n` +
+        const correctList =
+          (b.correctAnswers || []).length > 0
+            ? `✅ To'g'ri: ${(b.correctAnswers || []).join(", ")}`
+            : "";
+        const wrongList =
+          (b.wrongAnswers || []).length > 0
+            ? `❌ Xato: ${(b.wrongAnswers || []).join(", ")}`
+            : "";
+
+        let finalMessage =
+          `📊 Yakuniy natijangiz (variant + yopiq):\n` +
           `👤 ${name}\n` +
           `🆔 ${b.userId}\n` +
-          `⭐ Ball: ${b.score}/${totalPossible}\n` +
+          `⭐ Ball: ${b.score.toFixed(1)}/${totalPossible.toFixed(1)}\n` +
           `📈 Foiz: ${percent.toFixed(2)}%\n` +
           `🎓 Daraja: ${degree}`;
-          
+
         if (correctList || wrongList) {
-          finalMessage += '\n\n' + [correctList, wrongList].filter(Boolean).join('\n');
+          finalMessage +=
+            "\n\n" + [correctList, wrongList].filter(Boolean).join("\n");
         }
-        
+
         await bot.sendMessage(b.userId, finalMessage);
       } catch (e) {
         console.log("push failed to", b.userId, e?.message || e);
@@ -1058,16 +1196,32 @@ async function connectDBs() {
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
-  // Serve a minimal page with MathLive and dynamic inputs
+  // Express route
   app.get("/", async (req, res) => {
     const tests = await CloseTests.find().sort({ number: 1 }).lean();
+
+    // Masalan, testni boshlagan foydalanuvchini topamiz
+    // (siz buni session, query yoki db orqali olishingiz mumkin)
+    const buyer = await Buyers.findOne().lean(); // test uchun bitta buyer
+
+    const userId = buyer?.userId || 0; // agar bo'lmasa 0
+
     const inputs = tests
       .map(
         (t) =>
-          `<div style="margin:12px 0;">
-            <label>❓ ${t.number}-savol</label>
-            <math-field style="display:block;border:1px solid #ccc;border-radius:8px;padding:8px;" id="q_${t.number}" virtual-keyboard-mode="onfocus"></math-field>
-          </div>`
+          `<div style="margin:12px 0; padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px;">
+          <label style="font-weight: bold; display: block; margin-bottom: 8px;">❓ ${t.number}-savol</label>
+          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 200px;">
+              <label style="display: block; margin-bottom: 4px; font-weight: 500;">A javob:</label>
+              <math-field style="display:block;border:1px solid #ccc;border-radius:8px;padding:8px;" id="q_${t.number}_a" virtual-keyboard-mode="onfocus"></math-field>
+            </div>
+            <div style="flex: 1; min-width: 200px;">
+              <label style="display: block; margin-bottom: 4px; font-weight: 500;">B javob:</label>
+              <math-field style="display:block;border:1px solid #ccc;border-radius:8px;padding:8px;" id="q_${t.number}_b" virtual-keyboard-mode="onfocus"></math-field>
+            </div>
+          </div>
+        </div>`
       )
       .join("");
 
@@ -1091,7 +1245,7 @@ async function connectDBs() {
     <div id="form" class="card">
       ${inputs || "<p>Hozircha yopiq testlar yo'q.</p>"}
       <div class="row">
-        <input id="userId" type="number" placeholder="Profil IDni kiriting" style="padding:8px;border:1px solid #e5e7eb;border-radius:8px;" />
+        <input id="userId" type="number" value="${userId}" readonly style="padding:8px;border:1px solid #e5e7eb;border-radius:8px;background:#f3f4f6;" />
         <button id="check">Tekshirish</button>
       </div>
       <p id="msg"></p>
@@ -1101,12 +1255,15 @@ async function connectDBs() {
         const btn = document.getElementById('check');
         btn.disabled = true;
         const userId = Number(document.getElementById('userId').value || '0');
-        if (!userId) { document.getElementById('msg').textContent = 'UserId kiriting'; btn.disabled = false; return; }
+        if (!userId) { document.getElementById('msg').textContent = 'UserId topilmadi'; btn.disabled = false; return; }
         const fields = Array.from(document.querySelectorAll('math-field[id^="q_"]'));
         const answers = {};
         for (const el of fields) {
-          const qn = Number(el.id.replace('q_',''));
-          answers[qn] = el.value.trim();
+          const idParts = el.id.replace('q_','').split('_');
+          const qn = Number(idParts[0]);
+          const answerType = idParts[1] || 'a';
+          if (!answers[qn]) answers[qn] = {};
+          answers[qn][answerType] = el.value.trim();
         }
         const res = await fetch('/api/submit', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ userId, answers }) });
         const data = await res.json();
@@ -1117,7 +1274,7 @@ async function connectDBs() {
     </script>
   </body>
 </html>`;
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
+
     res.send(html);
   });
 
@@ -1135,7 +1292,11 @@ async function connectDBs() {
 
       const buyer = await Buyers.findOne({ userId });
       if (!buyer) return res.status(404).json({ message: "Buyer topilmadi" });
-      // if (buyer.finished) return res.status(400).json({ message: "Test tugatilgan" });
+
+      // 🚫 Agar allaqachon tugatgan bo‘lsa
+      if (buyer.closeTestFinished) {
+        return res.status(400).json({ message: "⚠️ Siz testni tugatgansiz" });
+      }
 
       let correct = 0;
       let wrong = 0;
@@ -1145,13 +1306,36 @@ async function connectDBs() {
 
       for (const t of tests) {
         const qNum = t.number;
-        const picked = String(answers[qNum] ?? "").trim();
-        const expected = String(t.answer ?? "").trim();
-        const isCorrect = picked && expected && picked === expected;
-        if (isCorrect) {
-          correct += 1;
-          earned += t.score || 1;
-          correctQuestions.push(qNum);
+        const userAnswers = answers[qNum] || {};
+        const pickedA = String(userAnswers.a ?? "").trim();
+        const pickedB = String(userAnswers.b ?? "").trim();
+
+        const expectedA = String(t.answerA?.value ?? "").trim();
+        const expectedB = String(t.answerB?.value ?? "").trim();
+
+        const isCorrectA = pickedA && expectedA && pickedA === expectedA;
+        const isCorrectB = pickedB && expectedB && pickedB === expectedB;
+
+        let questionEarned = 0;
+        let questionCorrect = 0;
+
+        if (isCorrectA) {
+          questionEarned += t.answerA?.score || 0;
+          questionCorrect += 1;
+        }
+        if (isCorrectB) {
+          questionEarned += t.answerB?.score || 0;
+          questionCorrect += 1;
+        }
+
+        if (questionCorrect > 0) {
+          correct += questionCorrect;
+          earned += questionEarned;
+          if (questionCorrect === 2) {
+            correctQuestions.push(qNum);
+          } else {
+            correctQuestions.push(`${qNum} (qisman)`);
+          }
         } else {
           wrong += 1;
           wrongQuestions.push(qNum);
@@ -1167,24 +1351,42 @@ async function connectDBs() {
       buyer.correctAnswers = [...prevCorrect, ...correctQuestions];
       buyer.wrongAnswers = [...prevWrong, ...wrongQuestions];
       buyer.score = (buyer.score || 0) + earned;
+
+      // ✅ Yopiq test tugallangan deb belgilash
+      buyer.closeTestFinished = true;
+
       await buyer.save();
 
-      const totalPossible = tests.reduce((s, t) => s + (t.score || 1), 0) || 1;
+      const totalPossible =
+        tests.reduce(
+          (s, t) => s + (t.answerA?.score || 0) + (t.answerB?.score || 0),
+          0
+        ) || 1;
       const percent = Math.round((earned / totalPossible) * 1000) / 10;
 
       // Send results summary to buyer in Telegram for closed tests
       try {
         // Overall totals (Option tests + Close tests)
         const allVariantTests = await Tests.find().lean();
-        const totalPossibleVariants = allVariantTests.reduce((s, t) => s + (t.score || 1), 0);
-        const totalPossibleClose = tests.reduce((s, t) => s + (t.score || 1), 0);
-        const totalPossibleOverall = totalPossibleVariants + totalPossibleClose || 1;
+        const totalPossibleVariants = allVariantTests.reduce(
+          (s, t) => s + (t.score || 1),
+          0
+        );
+        const totalPossibleClose = tests.reduce(
+          (s, t) => s + (t.answerA?.score || 0) + (t.answerB?.score || 0),
+          0
+        );
+        const totalPossibleOverall =
+          totalPossibleVariants + totalPossibleClose || 1;
         const earnedOverall = buyer.score || 0; // already cumulative
-        const percentOverall = Math.round((earnedOverall / totalPossibleOverall) * 1000) / 10;
+        const percentOverall =
+          Math.round((earnedOverall / totalPossibleOverall) * 1000) / 10;
 
         const overall =
           `📊 Umumiy natija (variant + yopiq)\n` +
-          `🎯 Jami ball: ${earnedOverall}/${totalPossibleOverall}\n` +
+          `🎯 Jami ball: ${earnedOverall.toFixed(
+            1
+          )}/${totalPossibleOverall.toFixed(1)}\n` +
           `❌ Jami xato: ${(buyer.wrongAnswers || []).length}\n` +
           `✅ Jami to'g'ri: ${(buyer.correctAnswers || []).length}\n` +
           `📈 Umumiy foiz: ${percentOverall}%`;
@@ -1195,7 +1397,8 @@ async function connectDBs() {
       }
 
       return res.json({
-        message: "Yopiq test natijalari saqlandi va foydalanuvchiga yuborildi.",
+        message:
+          "✅ Yopiq test natijalari saqlandi va foydalanuvchiga yuborildi.",
         correct,
         wrong,
         earned,

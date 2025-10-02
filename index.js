@@ -47,8 +47,15 @@ function getWebAppUrl() {
 async function sendClosedTestLink(userId) {
   const url = getWebAppUrl();
   if (!url) throw new Error("WEB_APP_URL must be https");
-  await bot.sendMessage(userId, `Yopiq testni ishga tushiring: ${url}`);
-}
+
+  // 🔑 userId query qo‘shib yuborish
+  const fullUrl = `${url}?userId=${userId}`;
+
+  await bot.sendMessage(
+    userId,
+    `📚 Yopiq testni boshlash:\n${fullUrl}`
+  );
+} 
 
 // === DATABASE CONNECTIONS ===
 async function connectDBs() {
@@ -157,19 +164,24 @@ async function connectDBs() {
 
     let lines = [];
     const allTests = await Tests.find().lean();
-    const totalPossible = allTests.reduce((s, t) => s + (t.score || 1), 0) || 1;
+    const allCloseTests = await CloseTests.find().lean();
+    const totalPossibleVariants = allTests.reduce((s, t) => s + (t.score || 1), 0);
+    const totalPossibleClosed = allCloseTests.reduce((s, t) => s + (t.answerA?.score || 0) + (t.answerB?.score || 0), 0);
+    const totalPossible = totalPossibleVariants + totalPossibleClosed || 1;
 
+    let idx = 1;
     for (const b of buyers) {
       let name = "?";
       try {
         const c = await bot.getChat(b.userId);
         name = c.first_name || c.username || "?";
       } catch (e) {}
-      const percent =
-        Math.round((b.score.toFixed(1) / totalPossible.toFixed(1)) * 1000) / 10;
+      const score = Number(b.score);
+      const percent = Math.round((score / totalPossible) * 1000) / 10;
       lines.push(
-        `${name} |🎯${b.score.toFixed(1)} |📈${percent}%|🎓${b.degree}`
+        `${idx}. ${name} |🎯${score.toFixed(1)} |📈${percent}%|🎓${b.degree}`
       );
+      idx++;
     }
 
     while (lines.length)
@@ -190,6 +202,7 @@ async function connectDBs() {
     correctAnswers: { type: [String], default: [] },
     wrongAnswers: { type: [String], default: [] },
     score: { type: Number, default: 0 },
+    sent: { type: Boolean, default: false },
     finished: { type: Boolean, default: false },
     closeTestFinished: { type: Boolean, default: false },
     degree: { type: String, default: "—" },
@@ -413,6 +426,7 @@ async function connectDBs() {
 
         if (res.upsertedCount && res.upsertedCount > 0) {
           results.push(`🆔 ${userId}: ✅ Qo‘shildi`);
+          bot.sendMessage(userId, "✅ Siz testga qo‘shildingiz!")
         } else if (res.matchedCount && res.matchedCount > 0) {
           results.push(`🆔 ${userId}: ⚠️ Allaqachon mavjud`);
         } else {
@@ -435,108 +449,44 @@ async function connectDBs() {
     return bot.sendMessage(replyChatId, response);
   });
 
-  // ====== /kim <id> (admin) ======
-  bot.onText(/\/kim (\d+)/, async (msg, match) => {
-    const adminId = msg.chat.id;
-    if (!isAdmin(adminId))
-      return bot.sendMessage(adminId, "❌ Bu buyruq faqat adminlar uchun!");
-
-    const userId = Number(match[1]);
-    try {
-      const chat = await bot.getChat(userId);
-      const name = chat.first_name || chat.username || "—";
-      const buyer = await Buyers.findOne({ userId });
-
-      if (buyer) {
-        return bot.sendMessage(
-          adminId,
-          `👤 ${name}\n🆔 ${userId}\n🎯 Ball: ${buyer.score}\nTo'g'ri: ${
-            (buyer.correctAnswers || []).length
-          }\nXato: ${(buyer.wrongAnswers || []).length}\nTugatgan: ${
-            buyer.finished ? "Ha" : "Yo‘q"
-          }`
-        );
-      }
-
-      return bot.sendMessage(
-        adminId,
-        `👤 ${name}\n🆔 ${userId}\nℹ️ Bu user Buyer emas`
-      );
-    } catch (e) {
-      return bot.sendMessage(adminId, `❌ Foydalanuvchi topilmadi: ${userId}`);
-    }
-  });
-
   // === ADMIN TEST CREATION ===
   const creatingTestSessions = {}; // adminId => session
 
-  bot.onText(/^\/testyaratish(?: (\d+))?$/, async (msg, match) => {
+  bot.onText(/^\/testyaratish$/, async (msg) => {
     if (!isMainAdmin(msg.chat.id)) return;
-
     const adminId = msg.chat.id;
-    const startNumber = match[1] ? Number(match[1]) : null;
-
     creatingTestSessions[adminId] = {
       step: 1,
-      data: { number: startNumber || null },
       tempQuestions: [],
       currentQuestion: null,
     };
-
     await bot.sendMessage(
       adminId,
-      `🛠 Test yaratish boshlandi.\n1️⃣ Savol raqamini kiriting\n2️⃣ Savol Variantlari\n3️⃣ To'g'ri javob(A,B,C...)\n4️⃣ Ball\nTugatgach /testyaratishni_tugat yozing.`
+      `🛠 Test yaratish boshlandi.\n1️⃣ Test raqamini kiriting (masalan: 1, 2, 3...)\n2️⃣ Variantlar soni (2-6)\n3️⃣ To'g'ri javob (A,B,C...)\n4️⃣ Ball\nTugatgach /testyaratishni_tugat yozing.`
     );
   });
 
-  // Admin message handler for test creation (only when session exists)
   bot.on("message", async (msg) => {
     const adminId = msg.chat.id;
     if (!isMainAdmin(adminId)) return;
-
     const session = creatingTestSessions[adminId];
-    if (!session) return; // only handle messages if session exists
-
+    if (!session) return;
     const step = session.step;
 
-    // If starting number is not set yet, allow the admin to input it first
-    if (
-      session.data &&
-      session.data.number == null &&
-      msg.text &&
-      /^\d+$/.test(msg.text.trim())
-    ) {
-      session.data.number = Number(msg.text.trim());
-      await bot.sendMessage(
-        adminId,
-        "✅ Savol raqami qabul qilindi. Endi variantlar sonini kiriting(2/3/4)."
-      );
-      return;
-    }
-
-    // /testyaratishni_tugat (also accept /testyaratishni_tugatish)
+    // Tugatish
     if (msg.text && /^\/testyaratishni_tugat(ish)?$/.test(msg.text.trim())) {
       if (!session.tempQuestions.length) {
         await bot.sendMessage(adminId, "⚠️ Hech qanday savol qo‘shilmadi.");
         delete creatingTestSessions[adminId];
         return;
       }
-
-      let baseNumber = session.data.number;
-      if (!baseNumber) {
-        const c = await Tests.countDocuments();
-        baseNumber = c + 1;
-      }
-
       for (let i = 0; i < session.tempQuestions.length; i++) {
         const q = session.tempQuestions[i];
-        const number = baseNumber + i;
-
         await Tests.updateOne(
-          { number },
+          { number: q.number },
           {
             $set: {
-              number,
+              number: q.number,
               options: q.options,
               answer: q.answer,
               score: q.score,
@@ -545,75 +495,92 @@ async function connectDBs() {
           { upsert: true }
         );
       }
-
       const totalTests = await Tests.countDocuments();
       await bot.sendMessage(
         adminId,
-        `✅ Savol saqlandi!\n${totalTests} ta test bor.\n /testyaratish`
+        `✅ Savollar saqlandi!\n${totalTests} ta test bor.\n /testyaratish`
       );
-
       delete creatingTestSessions[adminId];
       return;
     }
 
-    // Step 1: Variantlar
+    // 1. Test raqami
     if (step === 1 && msg.text) {
-      if (!session.currentQuestion) session.currentQuestion = {};
+      const raw = msg.text.trim();
+      if (!/^\d+$/.test(raw)) {
+        return bot.sendMessage(adminId, "⚠️ Test raqami faqat son bo‘lishi kerak. Qayta kiriting.");
+      }
+      session.currentQuestion = { number: Number(raw) };
+      session.step = 2;
+      await bot.sendMessage(adminId, "✅ Variantlar sonini kiriting (2-6):");
+      return;
+    }
 
+    // 2. Variantlar soni
+    if (step === 2 && msg.text) {
       const raw = msg.text.trim();
       const numericCount = /^\d+$/.test(raw) ? Number(raw) : null;
-
       let opts;
-      if (numericCount && [2, 3, 4].includes(numericCount)) {
+      if (numericCount && [2, 3, 4, 5, 6].includes(numericCount)) {
         opts = Array.from({ length: numericCount }, (_, i) =>
           String.fromCharCode(65 + i)
         );
       } else {
-        opts = raw
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
+        return bot.sendMessage(adminId, "⚠️ Faqat 2-6 oralig'idagi son kiriting.");
       }
-
-      if (opts.length < 2)
-        return bot.sendMessage(adminId, "⚠️ Kamida 2 ta variant kiriting.");
-
       session.currentQuestion.options = opts;
-      session.step = 2;
-      await bot.sendMessage(
-        adminId,
-        "✅ To‘g‘ri javobni kiriting (masalan: A):"
-      );
+      session.currentQuestion.allowedAnswers = opts.map((v) => v.toUpperCase());
+      session.step = 3;
+      await bot.sendMessage(adminId, `✅ To‘g‘ri javobni kiriting (${opts.join(", ")})`);
       return;
     }
 
-    // Step 2: To'g'ri javob
-    if (step === 2 && msg.text) {
-      session.currentQuestion.answer = msg.text.trim().toUpperCase();
-      session.step = 3;
+    // 3. To'g'ri javob
+    if (step === 3 && msg.text) {
+      if (!session.currentQuestion) {
+        await bot.sendMessage(adminId, "⚠️ Ichki xatolik: Savol holati yo'q. Yangi savolni boshlang.");
+        session.step = 1;
+        return;
+      }
+      const answer = msg.text.trim().toUpperCase();
+      const allowed = session.currentQuestion.allowedAnswers || [];
+      if (!allowed.includes(answer)) {
+        await bot.sendMessage(
+          adminId,
+          `⚠️ To‘g‘ri javob faqat variantlar ichidan bo‘lishi kerak: ${allowed.join(", ")}`
+        );
+        await bot.sendMessage(
+          adminId,
+          `Iltimos, yana to‘g‘ri javobni kiriting (${allowed.join(", ")})`
+        );
+        return;
+      }
+      session.currentQuestion.answer = answer;
+      session.step = 4;
       await bot.sendMessage(adminId, "🎯 Ballni kiriting (raqam):");
       return;
     }
 
-    // Step 3: Ball
-    if (step === 3 && msg.text) {
+    // 4. Ball
+    if (step === 4 && msg.text) {
+      if (!session.currentQuestion) {
+        await bot.sendMessage(adminId, "⚠️ Ichki xatolik: Savol holati yo'q. Yangi savolni boshlang.");
+        session.step = 1;
+        return;
+      }
       const score = Number(msg.text.trim());
       if (isNaN(score))
         return bot.sendMessage(
           adminId,
           "⚠️ Ball raqami bo‘lishi kerak. Qayta yuboring."
         );
-
       session.currentQuestion.score = score;
-
-      // Savolni qo'shish
       session.tempQuestions.push({ ...session.currentQuestion });
       session.currentQuestion = null;
       session.step = 1;
-
       await bot.sendMessage(
         adminId,
-        "➕ Savol qo‘shildi. /testyaratishni_tugat yozing."
+        `➕ Savol qo‘shildi. Yangi test raqamini kiriting yoki /testyaratishni_tugat yozing.`
       );
     }
   });
@@ -666,11 +633,12 @@ async function connectDBs() {
       return bot.sendMessage(adminId, "🚫 Buyers mavjud emas.");
 
     for (const buyer of buyers) {
-      if (buyer.finished) continue;
+      if (buyer.finished && buyer.sent) continue;
 
       // 1-savoldan boshlaymiz
       await sendTestQuestion(buyer.userId, tests, 0);
       await sleep(RATE_LIMIT_DELAY);
+    // Step 1: Savol raqami
     }
 
     await bot.sendMessage(
@@ -1078,7 +1046,9 @@ async function connectDBs() {
 
     const updatedBuyers = await Buyers.find({}).lean();
     for (const b of updatedBuyers) {
-      const percent = (b.score / totalPossible) * 100;
+      const score = Number(b.score);
+      // Foizni 1 kasr belgigacha yaxlitlash (masalan, 69.1%)
+      const percent = Math.round((score / totalPossible) * 1000) / 10;
       const degree = getDegree(percent);
       await Buyers.updateOne({ userId: b.userId }, { $set: { degree } });
       try {
@@ -1097,8 +1067,8 @@ async function connectDBs() {
           `📊 Yakuniy natijangiz (variant + yopiq):\n` +
           `👤 ${name}\n` +
           `🆔 ${b.userId}\n` +
-          `⭐ Ball: ${b.score.toFixed(1)}/${totalPossible.toFixed(1)}\n` +
-          `📈 Foiz: ${percent.toFixed(2)}%\n` +
+          `⭐ Ball: ${score.toFixed(1)}/${totalPossible.toFixed(1)}\n` +
+          `📈 Foiz: ${percent}%\n` +
           `🎓 Daraja: ${degree}`;
 
         if (correctList || wrongList) {
@@ -1191,41 +1161,38 @@ async function connectDBs() {
   });
   console.log("Bot ishga tushdi");
 
-  // ====== Web App (MathLive input form) ======
-  const app = express();
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
+// ====== Web App (MathLive input form) ======
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-  // Express route
-  app.get("/", async (req, res) => {
-    const tests = await CloseTests.find().sort({ number: 1 }).lean();
+// Express route
+app.get("/", async (req, res) => {
+  const tests = await CloseTests.find().sort({ number: 1 }).lean();
 
-    // Masalan, testni boshlagan foydalanuvchini topamiz
-    // (siz buni session, query yoki db orqali olishingiz mumkin)
-    const buyer = await Buyers.findOne().lean(); // test uchun bitta buyer
+  // URL query orqali userId olish (masalan: /?userId=12345)
+  const userId = Number(req.query.userId || 0);
 
-    const userId = buyer?.userId || 0; // agar bo'lmasa 0
-
-    const inputs = tests
-      .map(
-        (t) =>
-          `<div style="margin:12px 0; padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px;">
-          <label style="font-weight: bold; display: block; margin-bottom: 8px;">❓ ${t.number}-savol</label>
-          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
-            <div style="flex: 1; min-width: 200px;">
-              <label style="display: block; margin-bottom: 4px; font-weight: 500;">A javob:</label>
-              <math-field style="display:block;border:1px solid #ccc;border-radius:8px;padding:8px;" id="q_${t.number}_a" virtual-keyboard-mode="onfocus"></math-field>
-            </div>
-            <div style="flex: 1; min-width: 200px;">
-              <label style="display: block; margin-bottom: 4px; font-weight: 500;">B javob:</label>
-              <math-field style="display:block;border:1px solid #ccc;border-radius:8px;padding:8px;" id="q_${t.number}_b" virtual-keyboard-mode="onfocus"></math-field>
-            </div>
+  const inputs = tests
+    .map(
+      (t) =>
+        `<div style="margin:12px 0; padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px;">
+        <label style="font-weight: bold; display: block; margin-bottom: 8px;">❓ ${t.number}-savol</label>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+          <div style="flex: 1; min-width: 200px;">
+            <label style="display: block; margin-bottom: 4px; font-weight: 500;">A javob:</label>
+            <math-field style="display:block;border:1px solid #ccc;border-radius:8px;padding:8px;" id="q_${t.number}_a" virtual-keyboard-mode="onfocus"></math-field>
           </div>
-        </div>`
-      )
-      .join("");
+          <div style="flex: 1; min-width: 200px;">
+            <label style="display: block; margin-bottom: 4px; font-weight: 500;">B javob:</label>
+            <math-field style="display:block;border:1px solid #ccc;border-radius:8px;padding:8px;" id="q_${t.number}_b" virtual-keyboard-mode="onfocus"></math-field>
+          </div>
+        </div>
+      </div>`
+    )
+    .join("");
 
-    const html = `<!doctype html>
+  const html = `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
@@ -1245,6 +1212,7 @@ async function connectDBs() {
     <div id="form" class="card">
       ${inputs || "<p>Hozircha yopiq testlar yo'q.</p>"}
       <div class="row">
+        <!-- 🔑 userId avtomatik qo‘yiladi va readonly -->
         <input id="userId" type="number" value="${userId}" readonly style="padding:8px;border:1px solid #e5e7eb;border-radius:8px;background:#f3f4f6;" />
         <button id="check">Tekshirish</button>
       </div>
@@ -1275,8 +1243,9 @@ async function connectDBs() {
   </body>
 </html>`;
 
-    res.send(html);
-  });
+  res.send(html);
+});
+
 
   // API: submit answers and update buyer profile
   app.post("/api/submit", async (req, res) => {
